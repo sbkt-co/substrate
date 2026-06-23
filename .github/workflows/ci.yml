@@ -22,8 +22,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Layer cache keyed (by buildx) on the Dockerfile + pinned requirements, so
+      # the apt + uv-install layers are reused until those inputs change. Safe:
+      # the toolchain versions are pinned, so a cache hit is byte-identical.
       - name: Build validation image
-        run: docker build -f tests/Dockerfile -t substrate-ci .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tests/Dockerfile
+          tags: substrate-ci
+          load: true
+          cache-from: type=gha,scope=validate
+          cache-to: type=gha,mode=max,scope=validate
 
       - name: Run validation suite (lint + syntax + check-mode converge)
         run: docker run --rm substrate-ci
@@ -63,6 +76,15 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           version: "0.8.22"
+          enable-cache: true
+
+      # Galaxy collections are version-pinned in requirements.yml, so key the
+      # cache on its hash — a bump invalidates, a hit is a fast no-op install.
+      - name: Cache Ansible collections
+        uses: actions/cache@v4
+        with:
+          path: ~/.ansible/collections
+          key: galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
 
       - name: Install Ansible + collections
         run: |
@@ -70,6 +92,18 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           ansible-galaxy collection install -r requirements.yml
+
+      # Prebake (base node image + python3/sudo) cached as a tarball, so the
+      # converge test skips the in-container apt entirely on a cache hit. Bump
+      # the key suffix to force a rebuild (e.g. to pick up base-image updates).
+      - name: Cache prebaked node image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/incus-image
+          key: incus-node-trixie-py3-v1
+
+      - name: Prepare prebaked node image
+        run: sg incus-admin -c 'tests/incus/prebake.sh'
 
       - name: Real converge + idempotence + drift repair (Incus)
         run: sg incus-admin -c 'tests/incus/run.sh'
