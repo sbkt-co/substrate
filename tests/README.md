@@ -51,6 +51,26 @@ It launches the container, converges, then asserts:
 3. **Liveness** — `tests/incus/verify.yml` asserts the unit files exist and the
    timer is `active`.
 
+### Addressing the right container on a busy host
+
+A host may run many unrelated Incus instances, so the harness never relies on a
+bare instance name. It is isolated and addressed three ways:
+
+- **Dedicated project.** Everything runs in its own Incus project
+  (`SUBSTRATE_INCUS_PROJECT`, default `substrate-test`), never the shared
+  `default` project. The script refuses to run if pointed at `default`.
+- **Full address.** Both the CLI calls and the Ansible connection target
+  `<remote>:<instance>` *within* that project (`ansible_incus_remote` +
+  `ansible_incus_project` + `ansible_incus_host`), so the node is unambiguous
+  regardless of same-named instances elsewhere.
+- **Managed label.** The instance is created with `user.substrate-managed=true`
+  and the harness only ever `--force` deletes an instance carrying that label —
+  it cannot remove something it did not create, even inside its own project. The
+  project is dropped on exit only if empty.
+
+(In production this problem does not arise: each node converges only *itself*
+over a local connection — there is no central selection of "which node".)
+
 ### macOS (Colima) — Incus alongside Docker
 
 On macOS, run Incus in its own Colima profile next to the default Docker

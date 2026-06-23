@@ -5,6 +5,13 @@
 # check-mode suite cannot: the playbook converges for real, is idempotent, and
 # repairs drift, leaving the reconciler timer active.
 #
+# Isolation: everything runs inside a DEDICATED Incus project (default
+# `substrate-test`), never the `default` project. Combined with a
+# `user.substrate-managed=true` label on the instance, this guarantees the
+# harness only ever addresses and deletes containers it created — no collision
+# with related or unrelated instances on a busy host. The instance is addressed
+# fully as <remote>:<instance> within <project>.
+#
 # Prereqs on the host: incus (initialised), ansible-core, and the
 # community.general collection (see requirements.yml). The current user must be
 # able to drive incus (incus-admin group or root).
@@ -15,12 +22,35 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 CONTAINER="${SUBSTRATE_TEST_CONTAINER:-substrate-test}"
+PROJECT="${SUBSTRATE_INCUS_PROJECT:-substrate-test}"
 IMAGE="${SUBSTRATE_TEST_IMAGE:-images:debian/trixie}"
 INVENTORY="tests/incus/inventory.yml"
 
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
-cleanup() { incus delete --force "$CONTAINER" >/dev/null 2>&1 || true; }
+# Never operate in the shared default project — that is where a user's real
+# containers live, and a stray --force delete there would be destructive.
+if [ "$PROJECT" = "default" ]; then
+    echo "refusing to run in the 'default' incus project; set SUBSTRATE_INCUS_PROJECT" >&2
+    exit 1
+fi
+
+# Run an incus subcommand scoped to our project. --project must come right after
+# the subcommand (before any `--` command separator), so insert it there rather
+# than appending. Address the instance and only delete it if it carries our
+# managed label, so we can never remove something we did not create.
+incus_in() { local sub="$1"; shift; incus "$sub" --project "$PROJECT" "$@"; }
+delete_if_managed() {
+    if incus_in config get "$CONTAINER" user.substrate-managed 2>/dev/null | grep -qx true; then
+        incus_in delete --force "$CONTAINER" >/dev/null 2>&1 || true
+    fi
+}
+cleanup() {
+    delete_if_managed
+    # Drop the project only if we left it empty (never force-remove a project
+    # that someone else has put instances into).
+    incus project delete "$PROJECT" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
 if ! incus info >/dev/null 2>&1; then
@@ -30,20 +60,30 @@ if ! incus info >/dev/null 2>&1; then
 fi
 
 # Drive incus/ansible against whatever the default remote is: `local` on a Linux
-# host (incus admin init), or the colima remote (colima-incus) on macOS. Both
+# host (incus admin init), or the colima remote (colima-incus) on macOS. Both the
 # incus CLI calls below and the ansible incus connection then target the same node.
 REMOTE="$(incus remote get-default 2>/dev/null || echo local)"
 export SUBSTRATE_INCUS_REMOTE="$REMOTE"
-echo "using incus remote: $REMOTE"
+export SUBSTRATE_INCUS_PROJECT="$PROJECT"
+echo "addressing incus node: remote=$REMOTE project=$PROJECT instance=$CONTAINER"
+
+# Dedicated project for isolation. features.profiles/images=false share the
+# host's default profile (network + storage) and image cache, so the project is
+# an instance namespace only — no separate network/storage to provision.
+step "ensure isolated incus project '$PROJECT'"
+if ! incus project show "$PROJECT" >/dev/null 2>&1; then
+    incus project create "$PROJECT" -c features.profiles=false -c features.images=false
+fi
+delete_if_managed   # clear any leftover managed instance from a prior failed run
 
 step "launch system container ($IMAGE)"
-incus launch "$IMAGE" "$CONTAINER"
+incus_in launch "$IMAGE" "$CONTAINER" -c user.substrate-managed=true
 
 step "wait for systemd to finish booting"
-incus exec "$CONTAINER" -- systemctl is-system-running --wait || true
+incus_in exec "$CONTAINER" -- systemctl is-system-running --wait || true
 
 step "install minimal prerequisites (python3 for Ansible, sudo for become)"
-incus exec "$CONTAINER" -- bash -c 'apt-get update -qq && apt-get install -y -qq python3 sudo ca-certificates'
+incus_in exec "$CONTAINER" -- bash -c 'apt-get update -qq && apt-get install -y -qq python3 sudo ca-certificates'
 
 converge() { ansible-playbook -i "$INVENTORY" tests/incus/converge.yml "$@"; }
 
@@ -59,12 +99,12 @@ else
 fi
 
 step "drift repair (delete managed unit + state, re-converge restores them)"
-incus exec "$CONTAINER" -- rm -f \
+incus_in exec "$CONTAINER" -- rm -f \
     /etc/systemd/system/substrate-reconcile.timer \
     /etc/substrate/node.yml
 converge
-incus exec "$CONTAINER" -- test -f /etc/systemd/system/substrate-reconcile.timer
-incus exec "$CONTAINER" -- test -f /etc/substrate/node.yml
+incus_in exec "$CONTAINER" -- test -f /etc/systemd/system/substrate-reconcile.timer
+incus_in exec "$CONTAINER" -- test -f /etc/substrate/node.yml
 
 step "verify reconciler is live"
 ansible-playbook -i "$INVENTORY" tests/incus/verify.yml
