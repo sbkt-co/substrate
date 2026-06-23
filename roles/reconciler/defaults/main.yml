@@ -1,0 +1,12 @@
+---
+# The control-plane pointers and schedule (substrate_repo_url, substrate_branch,
+# substrate_playbook, substrate_reconcile_*) are global vars defined in
+# group_vars/all.yml, which always loads via local.yml. They are intentionally
+# NOT redefined here: they are fleet-wide, not role-local, and the templates
+# below consume them directly.
+
+# Where ansible-pull checks out the repo on the node.
+reconciler_workdir: /var/lib/substrate/repo
+
+# Absolute path to ansible-pull. Overridable for venv-based installs.
+reconciler_ansible_pull_bin: /usr/bin/ansible-pull

@@ -1,0 +1,70 @@
+---
+name: ci
+
+# Two gates:
+#   validate  — fast, unprivileged: lint + syntax + check-mode converge (Docker
+#               toolchain image; same thing developers run via tests/run.sh).
+#   converge  — real convergence in an Incus system container (systemd as PID 1),
+#               proving idempotence + drift repair (tests/incus/run.sh).
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build validation image
+        run: docker build -f tests/Dockerfile -t substrate-ci .
+
+      - name: Run validation suite (lint + syntax + check-mode converge)
+        run: docker run --rm substrate-ci
+
+  converge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Incus
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://pkgs.zabbly.com/key.asc | sudo tee /etc/apt/keyrings/zabbly.asc >/dev/null
+          codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          arch="$(dpkg --print-architecture)"
+          sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.sources >/dev/null <<EOF
+          Enabled: yes
+          Types: deb
+          URIs: https://pkgs.zabbly.com/incus/stable
+          Suites: ${codename}
+          Components: main
+          Architectures: ${arch}
+          Signed-By: /etc/apt/keyrings/zabbly.asc
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y incus
+          sudo incus admin init --minimal
+          sudo usermod -aG incus-admin "$USER"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.22"
+
+      - name: Install Ansible + collections
+        run: |
+          uv tool install "ansible-core==2.18.6"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Real converge + idempotence + drift repair (Incus)
+        run: sg incus-admin -c 'tests/incus/run.sh'

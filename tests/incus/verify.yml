@@ -1,0 +1,35 @@
+---
+# Asserts the reconciler is genuinely live on the node — the part a check-mode
+# run can never prove: the systemd units exist and the timer is actually active.
+- name: Verify reconciler is live
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Stat reconciler unit files and node identity
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: substrate_paths
+      loop:
+        - /etc/systemd/system/substrate-reconcile.service
+        - /etc/systemd/system/substrate-reconcile.timer
+        - /etc/substrate/node.yml
+
+    - name: Assert all managed paths are present
+      ansible.builtin.assert:
+        that:
+          - substrate_paths.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+        fail_msg: "Missing: {{ substrate_paths.results | selectattr('stat.exists', 'equalto', false) | map(attribute='item') | list }}"
+
+    - name: Query reconciler timer state
+      ansible.builtin.systemd:
+        name: substrate-reconcile.timer
+      register: substrate_timer
+      changed_when: false
+
+    - name: Assert reconciler timer is active
+      ansible.builtin.assert:
+        that:
+          - substrate_timer.status.ActiveState == "active"
+        fail_msg: "timer ActiveState is {{ substrate_timer.status.ActiveState }}, expected active"

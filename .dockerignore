@@ -1,0 +1,5 @@
+.git
+.github
+*.retry
+__pycache__
+*.pyc

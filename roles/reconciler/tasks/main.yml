@@ -1,0 +1,45 @@
+---
+# Installs the self-reconciliation loop: a systemd timer that periodically runs
+# ansible-pull against main. This is what makes the fleet pull-based and removes
+# any need for an operator workstation to push converges.
+
+- name: Ensure Ansible is installed (the reconciler depends on it)
+  ansible.builtin.package:
+    name: ansible
+    state: present
+
+- name: Ensure reconciler checkout directory exists
+  ansible.builtin.file:
+    path: "{{ reconciler_workdir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install reconciler service unit
+  ansible.builtin.template:
+    src: substrate-reconcile.service.j2
+    dest: /etc/systemd/system/substrate-reconcile.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Install reconciler timer unit
+  ansible.builtin.template:
+    src: substrate-reconcile.timer.j2
+    dest: /etc/systemd/system/substrate-reconcile.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Flush handlers so the timer sees the latest unit definitions
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the reconciler timer
+  ansible.builtin.systemd:
+    name: substrate-reconcile.timer
+    enabled: true
+    state: started
+  when: ansible_service_mgr == 'systemd'

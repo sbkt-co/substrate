@@ -1,0 +1,65 @@
+---
+# Entry point for ansible-pull. A node runs:
+#   ansible-pull --url <repo> --checkout <branch> --purge -i localhost, local.yml
+# and converges itself to the desired state committed on the branch it tracks
+# (main = production, staging = pre-prod; seeded at bootstrap into
+# /etc/substrate/branch and pinned below).
+#
+# Shape: bootstrap (common base every node gets) -> differentiate (role layers
+# selected by the node's own identity). No external orchestrator decides what a
+# node is; the node resolves its own roles from host_vars/<hostname>.yml.
+
+- name: Converge substrate node
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Resolve node identity (load host_vars/<hostname>.yml if present)
+      ansible.builtin.include_vars: "{{ item }}"
+      vars:
+        _candidates:
+          - "host_vars/{{ ansible_fqdn }}.yml"
+          - "host_vars/{{ ansible_hostname }}.yml"
+      with_first_found:
+        - files: "{{ _candidates }}"
+          skip: true
+
+    - name: Detect node-local tracked-branch seed (written at bootstrap)
+      ansible.builtin.stat:
+        path: /etc/substrate/branch
+      register: substrate_branch_seed_stat
+
+    - name: Read the tracked-branch seed
+      ansible.builtin.slurp:
+        src: /etc/substrate/branch
+      register: substrate_branch_seed
+      when: substrate_branch_seed_stat.stat.exists
+
+    - name: Pin substrate_branch to the node's seeded environment
+      ansible.builtin.set_fact:
+        substrate_branch: "{{ substrate_branch_seed.content | b64decode | trim }}"
+      when:
+        - substrate_branch_seed_stat.stat.exists
+        - (substrate_branch_seed.content | b64decode | trim) | length > 0
+
+    - name: Report resolved environment and role layers
+      ansible.builtin.debug:
+        msg: >-
+          Converging {{ ansible_hostname }} on branch '{{ substrate_branch }}'
+          with base substrate + role layers: {{ node_roles }}
+
+  roles:
+    # Base substrate: applied to every node, unconditionally.
+    - role: common
+    # Installs the systemd timer that keeps this node reconciling from main.
+    - role: reconciler
+
+  tasks:
+    - name: Apply role-specific differentiation layers
+      ansible.builtin.include_role:
+        name: "{{ role_layer }}"
+      loop: "{{ node_roles | default([]) }}"
+      loop_control:
+        loop_var: role_layer

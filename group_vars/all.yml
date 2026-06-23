@@ -1,0 +1,25 @@
+---
+# Canonical pointers to the control plane. Every node converges itself from
+# whatever is committed here on `main`. Override per-node in host_vars only if
+# a node must track a different branch (e.g. a canary).
+
+substrate_repo_url: "https://github.com/sbkt-co/substrate.git"
+# Fallback environment only. A real node's tracked branch is seeded at bootstrap
+# into /etc/substrate/branch and pinned by local.yml, so production nodes track
+# `main` and staging nodes track `staging` without per-node repo config (which
+# would break fast-forward promotion). This default is what the test harness and
+# a node with no seed fall back to.
+substrate_branch: "main"
+substrate_playbook: "local.yml"
+
+# How often a node reconciles itself against the control plane, and how much
+# random jitter to spread fleet-wide load. These drive the systemd timer the
+# reconciler role installs. Values use systemd time syntax.
+substrate_reconcile_interval: "15min"
+substrate_reconcile_splay: "120s"
+substrate_reconcile_on_boot_sec: "5min"
+
+# Default role layers applied to a node when host_vars/<hostname>.yml does not
+# specify any. The base substrate (common + reconciler) is always applied by
+# local.yml regardless of this list.
+node_roles: []

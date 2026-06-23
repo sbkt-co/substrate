@@ -1,0 +1,22 @@
+# Managed by substrate (roles/reconciler). Do not edit by hand.
+[Unit]
+Description=Substrate reconciler (ansible-pull from main)
+Documentation={{ substrate_repo_url }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# --purge removes the checkout's stale files; --only-if-changed is intentionally
+# NOT set so the node re-converges every run, repairing manual drift even when
+# the spec on main has not changed.
+ExecStart={{ reconciler_ansible_pull_bin }} \
+    --url {{ substrate_repo_url }} \
+    --checkout {{ substrate_branch }} \
+    --directory {{ reconciler_workdir }} \
+    --purge \
+    --inventory localhost, \
+    {{ substrate_playbook }}
+# A failed converge must surface but must not wedge the node; the timer retries.
+Nice=10
+IOSchedulingClass=best-effort

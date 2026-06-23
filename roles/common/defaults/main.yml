@@ -1,0 +1,10 @@
+---
+# Base packages every substrate node should have. Role layers add their own.
+common_base_packages:
+  - git
+  - ca-certificates
+  - python3
+  - sudo
+
+# Marker directory recording that a node is under substrate management.
+common_state_dir: /etc/substrate

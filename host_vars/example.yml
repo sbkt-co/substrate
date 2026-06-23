@@ -1,0 +1,20 @@
+---
+# Per-node differentiation. Copy this to host_vars/<hostname>.yml (or
+# host_vars/<fqdn>.yml) where the filename matches the node's reported
+# `ansible_hostname` / `ansible_fqdn`. local.yml loads it automatically and
+# applies each listed role layer on top of the base substrate.
+#
+# This is how a node discovers what it is — the spec lives in the control
+# plane (this repo), keyed by the node's own identity. No external orchestrator
+# assigns roles.
+#
+# NOTE: do NOT pin the environment/branch here. Which branch a node tracks is
+# seeded at bootstrap (/etc/substrate/branch), not in host_vars — keeping this
+# file identical across main and staging so fast-forward promotion stays clean.
+# Per-node settings that legitimately differ (roles, reconcile cadence) belong
+# here; see host_vars/staging-canary.example.yml for a faster-reconciling node.
+#
+# node_roles:
+#   - webserver
+#   - metrics_agent
+node_roles: []
