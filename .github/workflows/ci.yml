@@ -52,6 +52,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y incus
           sudo incus admin init --minimal
+          # The runner has Docker installed, whose iptables FORWARD policy
+          # defaults to DROP and blocks the Incus bridge from NAT-ing to the
+          # internet (so apt inside the container fails). Allow forwarding.
+          sudo sysctl -w net.ipv4.ip_forward=1
+          sudo iptables -P FORWARD ACCEPT
           sudo usermod -aG incus-admin "$USER"
 
       - name: Set up uv

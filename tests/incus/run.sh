@@ -79,11 +79,20 @@ delete_if_managed   # clear any leftover managed instance from a prior failed ru
 step "launch system container ($IMAGE)"
 incus_in launch "$IMAGE" "$CONTAINER" -c user.substrate-managed=true
 
-step "wait for systemd to finish booting"
-incus_in exec "$CONTAINER" -- systemctl is-system-running --wait || true
+step "wait for the container to finish booting"
+for _ in $(seq 1 60); do
+    state="$(incus_in exec "$CONTAINER" -- systemctl is-system-running 2>/dev/null || true)"
+    case "$state" in running | degraded) break ;; esac
+    sleep 2
+done
 
-step "install minimal prerequisites (python3 for Ansible, sudo for become)"
-incus_in exec "$CONTAINER" -- bash -c 'apt-get update -qq && apt-get install -y -qq python3 sudo ca-certificates'
+# Ansible needs python3 on the target; become needs sudo. Skip the apt install
+# (and its network dependency) when the image already carries them — e.g. a
+# prebaked/cached image in CI.
+step "ensure prerequisites (python3 for Ansible, sudo for become)"
+if ! incus_in exec "$CONTAINER" -- sh -c 'command -v python3 >/dev/null 2>&1' 2>/dev/null; then
+    incus_in exec "$CONTAINER" -- sh -c 'apt-get update -qq && apt-get install -y -qq python3 sudo ca-certificates'
+fi
 
 converge() { ansible-playbook -i "$INVENTORY" tests/incus/converge.yml "$@"; }
 
