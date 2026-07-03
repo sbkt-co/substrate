@@ -51,6 +51,9 @@ jobs:
   # expensive converge job can skip doc-only / unrelated changes.
   changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       converge: ${{ steps.filter.outputs.converge }}
     steps:
@@ -70,6 +73,7 @@ jobs:
               - 'bootstrap/**'
               - 'requirements.yml'
               - 'tests/incus/**'
+              - 'staging/**'
               - '.github/workflows/ci.yml'
 
   converge:
