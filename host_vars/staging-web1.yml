@@ -1,0 +1,22 @@
+---
+# Per-node identity for the persistent staging web node.
+#
+# staging-web1 joins the tailnet and fetches the wildcard TLS cert served by the
+# issuer (staging-core). It is the second of the two long-lived Incus instances
+# in the local staging fleet (see staging/README.md).
+#
+# NOTE: the tracked branch (`staging`) is NOT pinned here — it is seeded at
+# bootstrap into /etc/substrate/branch, keeping this file identical across main
+# and staging so fast-forward promotion stays clean. Only per-node settings that
+# are safe to keep identical across branches live here.
+node_roles:
+  - tailnet
+  - cert_client
+
+# Reconcile fast so drift and bad promotions surface quickly on staging.
+substrate_reconcile_interval: "5min"
+substrate_reconcile_splay: "30s"
+
+# Headscale coordination server URL as reached by clients within the staging
+# fleet. Points at the staging-core container over the Incus-provided DNS name.
+substrate_headscale_url: "http://staging-core.incus:8080"

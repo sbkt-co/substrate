@@ -1,0 +1,76 @@
+---
+# Install and converge the headscale coordination server from a pinned upstream
+# .deb, render its config, run it under systemd, and ensure the fleet's headscale
+# user (namespace) exists so nodes can be issued preauth keys.
+#
+# Idempotent by design: the .deb is only fetched/installed when the installed
+# version does not match headscale_version, and the user is only created when it
+# is absent from `headscale users list`.
+
+- name: Probe the installed headscale version
+  ansible.builtin.command: headscale version
+  register: headscale_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Download the pinned headscale .deb
+  ansible.builtin.get_url:
+    url: "{{ headscale_deb_url }}"
+    dest: "{{ headscale_deb_dest }}"
+    mode: "0644"
+  when: headscale_version not in (headscale_installed.stdout | default(''))
+
+- name: Install the pinned headscale .deb
+  ansible.builtin.apt:
+    deb: "{{ headscale_deb_dest }}"
+  when: headscale_version not in (headscale_installed.stdout | default(''))
+
+- name: Ensure headscale config directory exists
+  ansible.builtin.file:
+    path: "{{ headscale_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure headscale data directory exists
+  ansible.builtin.file:
+    path: "{{ headscale_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Render headscale configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ headscale_config_dir }}/config.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart headscale
+
+- name: Enable and start headscale
+  ansible.builtin.systemd:
+    name: "{{ headscale_service_name }}"
+    enabled: true
+    state: started
+  when: ansible_service_mgr == 'systemd'
+
+- name: Flush handlers so the user probe hits the running/restarted server
+  ansible.builtin.meta: flush_handlers
+
+- name: List existing headscale users
+  ansible.builtin.command: headscale users list --output json
+  register: headscale_users
+  changed_when: false
+  check_mode: false
+  when: ansible_service_mgr == 'systemd'
+
+- name: Create the fleet headscale user (namespace)
+  ansible.builtin.command: headscale users create {{ headscale_user }}
+  changed_when: true
+  when:
+    - ansible_service_mgr == 'systemd'
+    - headscale_user not in (headscale_users.stdout | default(''))

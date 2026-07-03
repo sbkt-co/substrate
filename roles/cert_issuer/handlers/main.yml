@@ -1,0 +1,10 @@
+---
+# Only restart once a live cert exists: without one the wrapper exits nonzero by
+# design, so starting the server prematurely would just fail-loop.
+- name: Restart substrate-certs
+  ansible.builtin.systemd:
+    name: substrate-certs.service
+    state: restarted
+  when:
+    - ansible_service_mgr == 'systemd'
+    - cert_issuer_live_stat.stat.exists | default(false)

@@ -1,0 +1,63 @@
+---
+# Pull the wildcard cert + key from the tailnet issuer and write them locally,
+# content-idempotently. A re-converge rewrites only when the served material
+# actually changed; an unreachable issuer is a loud skip, never a failure.
+
+- name: Ensure the local cert directory exists
+  ansible.builtin.file:
+    path: "{{ cert_client_dest_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Fetch the wildcard fullchain from the tailnet issuer
+  ansible.builtin.uri:
+    url: "http://{{ cert_client_issuer_host }}:{{ cert_client_serve_port }}/fullchain.pem"
+    return_content: true
+    status_code: 200
+  register: cert_client_fullchain
+  failed_when: false
+  check_mode: false
+
+- name: Warn and skip when the tailnet cert issuer is unreachable
+  ansible.builtin.debug:
+    msg: >-
+      Cert fetch SKIPPED on {{ inventory_hostname }}: issuer
+      http://{{ cert_client_issuer_host }}:{{ cert_client_serve_port }}/ is
+      unreachable (status {{ cert_client_fullchain.status | default('n/a') }}).
+      The tailnet may be down or the issuer not serving yet — the next reconcile
+      will retry.
+  when: cert_client_fullchain.status | default(-1) != 200
+
+- name: Fetch the wildcard private key from the tailnet issuer
+  ansible.builtin.uri:
+    url: "http://{{ cert_client_issuer_host }}:{{ cert_client_serve_port }}/privkey.pem"
+    return_content: true
+    status_code: 200
+  register: cert_client_privkey
+  failed_when: false
+  check_mode: false
+  no_log: true
+  when: cert_client_fullchain.status | default(-1) == 200
+
+- name: Install the wildcard fullchain
+  ansible.builtin.copy:
+    content: "{{ cert_client_fullchain.content }}"
+    dest: "{{ cert_client_dest_dir }}/fullchain.pem"
+    owner: root
+    group: root
+    mode: "0644"
+  when: cert_client_fullchain.status | default(-1) == 200
+
+- name: Install the wildcard private key
+  ansible.builtin.copy:
+    content: "{{ cert_client_privkey.content }}"
+    dest: "{{ cert_client_dest_dir }}/privkey.pem"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when:
+    - cert_client_fullchain.status | default(-1) == 200
+    - cert_client_privkey.status | default(-1) == 200

@@ -1,0 +1,9 @@
+#!/bin/sh
+{{ ansible_managed | comment }}
+# certbot deploy hook: runs after a successful issuance/renewal and republishes
+# the live cert into the tailnet-servable directory. Managed by roles/cert_issuer.
+set -eu
+
+install -d -m 0755 "{{ cert_issuer_serve_dir }}"
+install -m 0644 "{{ cert_issuer_live_dir }}/fullchain.pem" "{{ cert_issuer_serve_dir }}/fullchain.pem"
+install -m 0600 "{{ cert_issuer_live_dir }}/privkey.pem" "{{ cert_issuer_serve_dir }}/privkey.pem"
