@@ -1,0 +1,30 @@
+---
+# Per-node identity for the persistent staging control node.
+#
+# staging-core runs the tailnet coordination server (headscale), joins its own
+# tailnet, and issues the wildcard TLS cert. It is one of the two long-lived
+# Incus instances in the local staging fleet (see staging/README.md).
+#
+# NOTE: the tracked branch (`staging`) is NOT pinned here — it is seeded at
+# bootstrap into /etc/substrate/branch, keeping this file identical across main
+# and staging so fast-forward promotion stays clean. Only per-node settings that
+# are safe to keep identical across branches live here.
+node_roles:
+  - headscale
+  - tailnet
+  - cert_issuer
+
+# Reconcile fast so drift and bad promotions surface quickly on staging.
+substrate_reconcile_interval: "5min"
+substrate_reconcile_splay: "30s"
+
+# Headscale coordination server URL as reached by clients within the staging
+# fleet. Points at the staging-core container over the Incus-provided DNS name.
+substrate_headscale_url: "http://staging-core.incus:8080"
+
+# Widen the headscale coordination bind to all interfaces so the peer node
+# (staging-web1) can reach it over the staging-core.incus name. This is safe
+# ONLY because the staging node is an isolated Incus container on a private
+# bridge; production must keep the loopback default and front headscale with a
+# reverse proxy / firewall rather than widening this bind.
+headscale_listen_addr: "0.0.0.0:8080"

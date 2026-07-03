@@ -1,0 +1,123 @@
+---
+# Install certbot, issue/renew the wildcard cert over Cloudflare DNS-01, publish a
+# servable copy, and serve it to tailnet peers via a systemd unit bound to the
+# node's tailscale IPv4.
+#
+# Everything downstream of the credentials check is guarded on the ini being
+# present, so a node without the Cloudflare secret converges cleanly (loud skip)
+# instead of failing. Issuance uses --keep-until-expiring, so re-converge is a
+# no-op once a valid cert exists.
+
+- name: Install certbot and the Cloudflare DNS plugin
+  ansible.builtin.apt:
+    name:
+      - certbot
+      - python3-certbot-dns-cloudflare
+    state: present
+    update_cache: true
+
+- name: Ensure the servable cert directory exists
+  ansible.builtin.file:
+    path: "{{ cert_issuer_serve_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the certbot deploy hook (publishes renewals to the servable dir)
+  ansible.builtin.template:
+    src: deploy-hook.sh.j2
+    dest: "{{ cert_issuer_deploy_hook }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check for the seeded Cloudflare credentials
+  ansible.builtin.stat:
+    path: "{{ cert_issuer_cloudflare_ini }}"
+  register: cert_issuer_cf_stat
+
+- name: Warn and skip cert issuance when the Cloudflare credentials are missing
+  ansible.builtin.debug:
+    msg: >-
+      Cert issuance SKIPPED on {{ inventory_hostname }}: Cloudflare credentials
+      absent — seed a certbot ini (dns_cloudflare_api_token = ...) at
+      {{ cert_issuer_cloudflare_ini }} (mode 0600) from a node-reachable source
+      (cloud secret manager / instance metadata).
+  when: not cert_issuer_cf_stat.stat.exists
+
+- name: Issue or renew the wildcard certificate
+  ansible.builtin.command: >-
+    certbot certonly --non-interactive --agree-tos
+    -m {{ substrate_acme_email }}
+    --dns-cloudflare
+    --dns-cloudflare-credentials {{ cert_issuer_cloudflare_ini }}
+    --dns-cloudflare-propagation-seconds 30
+    {{ '--staging' if substrate_acme_staging else '' }}
+    -d "*.{{ substrate_tailnet_domain }}"
+    -d "{{ substrate_tailnet_domain }}"
+    --cert-name {{ cert_issuer_name }}
+    --keep-until-expiring
+    --deploy-hook {{ cert_issuer_deploy_hook }}
+  register: cert_issuer_issue
+  changed_when: >-
+    ('Successfully received certificate' in cert_issuer_issue.stdout)
+    or ('Renewing an existing certificate' in cert_issuer_issue.stdout)
+  when:
+    - ansible_service_mgr == 'systemd'
+    - cert_issuer_cf_stat.stat.exists
+
+- name: Check whether a live certificate exists
+  ansible.builtin.stat:
+    path: "{{ cert_issuer_live_dir }}/fullchain.pem"
+  register: cert_issuer_live_stat
+
+- name: Publish the live fullchain to the servable directory
+  ansible.builtin.copy:
+    src: "{{ cert_issuer_live_dir }}/fullchain.pem"
+    dest: "{{ cert_issuer_serve_dir }}/fullchain.pem"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: cert_issuer_live_stat.stat.exists
+
+- name: Publish the live private key to the servable directory
+  ansible.builtin.copy:
+    src: "{{ cert_issuer_live_dir }}/privkey.pem"
+    dest: "{{ cert_issuer_serve_dir }}/privkey.pem"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: cert_issuer_live_stat.stat.exists
+
+- name: Install the tailnet cert-server wrapper
+  ansible.builtin.template:
+    src: substrate-certs-serve.sh.j2
+    dest: "{{ cert_issuer_server_wrapper }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the cert-server systemd unit
+  ansible.builtin.template:
+    src: substrate-certs.service.j2
+    dest: /etc/systemd/system/substrate-certs.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart substrate-certs
+
+- name: Flush handlers so the cert server picks up unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the tailnet cert server
+  ansible.builtin.systemd:
+    name: substrate-certs.service
+    enabled: true
+    state: started
+  when:
+    - ansible_service_mgr == 'systemd'
+    - cert_issuer_live_stat.stat.exists

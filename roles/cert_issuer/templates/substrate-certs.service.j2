@@ -1,0 +1,14 @@
+{{ ansible_managed | comment }}
+# Managed by roles/cert_issuer. Serves the wildcard cert to tailnet peers.
+[Unit]
+Description=substrate wildcard cert server (tailnet-only)
+After=tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+ExecStart={{ cert_issuer_server_wrapper }}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

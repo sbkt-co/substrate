@@ -1,0 +1,21 @@
+---
+# Issue the fleet's single public artifact — a wildcard TLS cert for the tailnet
+# subdomain — via certbot + the Cloudflare DNS-01 plugin, then serve it to peers
+# over the tailnet only.
+#
+# The Cloudflare credentials are a node-local certbot ini (dns_cloudflare_api_token
+# = ...) seeded (NOT stored in git) at {{ cert_issuer_cloudflare_ini }}. On a
+# production node it must be delivered from a source the node itself can reach
+# (cloud secret manager / instance metadata), never from an operator laptop. When
+# the ini is absent this role skips issuance with a loud warning rather than failing.
+cert_issuer_cloudflare_ini: "{{ substrate_secrets_dir }}/cloudflare.ini"
+
+# certbot lineage name and the resulting live directory.
+cert_issuer_name: "{{ substrate_tailnet_domain }}"
+cert_issuer_live_dir: "/etc/letsencrypt/live/{{ substrate_tailnet_domain }}"
+
+# Servable copy of the live cert, exposed to tailnet peers by the cert server.
+cert_issuer_serve_dir: /var/lib/substrate/certs
+cert_issuer_serve_port: 8444
+cert_issuer_server_wrapper: /usr/local/bin/substrate-certs-serve.sh
+cert_issuer_deploy_hook: /usr/local/bin/substrate-cert-deploy-hook.sh

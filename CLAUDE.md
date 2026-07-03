@@ -5,14 +5,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Layout
 
 ```
-local.yml                 # ansible-pull entry point: bootstrap base + apply role layers
-ansible.cfg               # roles_path, inventory, sudo-by-default
-inventory/hosts.yml       # localhost only (ansible-pull converges the local node)
-group_vars/all.yml        # control-plane pointers + reconcile schedule (canonical vars)
-host_vars/<hostname>.yml  # per-node identity: which role layers a node selects (node_roles)
-bootstrap/bootstrap.sh    # one-shot fresh-node bootstrap (e.g. cloud-init user-data)
-roles/common/             # base substrate every node gets (always applied)
-roles/reconciler/         # installs the systemd timer that runs ansible-pull from main
+local.yml                      # ansible-pull entry point: bootstrap base + apply role layers
+ansible.cfg                    # roles_path, inventory, sudo-by-default
+inventory/hosts.yml            # localhost only (ansible-pull converges the local node)
+group_vars/all.yml             # control-plane pointers + reconcile schedule (canonical vars)
+host_vars/<hostname>.yml       # per-node identity: which role layers a node selects (node_roles)
+bootstrap/bootstrap.sh         # one-shot fresh-node bootstrap (e.g. cloud-init user-data)
+roles/common/                  # base substrate every node gets (always applied)
+roles/reconciler/              # installs the systemd timer that runs ansible-pull from main
+/etc/substrate/secrets/        # root-only (0700) credential files seeded at bootstrap:
+  tailnet-authkey              #   Tailscale auth key (SUBSTRATE_TAILNET_AUTHKEY)
+  cloudflare-dns.ini           #   DNS-edit API token (SUBSTRATE_CLOUDFLARE_TOKEN)
+  cloudflare.ini               #   ACME/certbot TXT-only token (SUBSTRATE_ACME_TOKEN)
 ```
 
 Role differentiation layers (e.g. `roles/webserver/`) are added under `roles/` and selected per-node via `node_roles` in `host_vars/<hostname>.yml`.
@@ -25,7 +29,7 @@ Role differentiation layers (e.g. `roles/webserver/`) are added under `roles/` a
 - **Ad-hoc command in the toolchain image:** `tests/run.sh ansible-lint roles/reconciler`
 - **Individual checks (if Ansible is installed on the host):** `ansible-playbook --syntax-check local.yml`, `ansible-lint`, `yamllint .`
 - **Local converge (no git fetch, current working tree):** `sudo ansible-playbook -i inventory/hosts.yml local.yml`
-- **Bootstrap a fresh node:** run `bootstrap/bootstrap.sh` as root (installs git+ansible, does the first `ansible-pull`; the `reconciler` role then takes over scheduling).
+- **Bootstrap a fresh node:** run `bootstrap/bootstrap.sh` as root (installs git+ansible, does the first `ansible-pull`; the `reconciler` role then takes over scheduling). Pass `SUBSTRATE_TAILNET_AUTHKEY`, `SUBSTRATE_CLOUDFLARE_TOKEN`, and/or `SUBSTRATE_ACME_TOKEN` as env vars to seed credential files under `/etc/substrate/secrets/` at bootstrap time; absent vars leave the file uncreated and consuming roles skip gracefully.
 - **Inspect the reconciler on a node:** `systemctl status substrate-reconcile.timer` / `journalctl -u substrate-reconcile.service`
 
 ## Target platform & gotchas

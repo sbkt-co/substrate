@@ -1,0 +1,11 @@
+# Managed by substrate (roles/reconciler). Do not edit by hand.
+[Unit]
+Description=Substrate reconciler failure handler
+Documentation={{ substrate_repo_url }}
+
+[Service]
+Type=oneshot
+# Extension point: substrate-reconcile.service triggers this via OnFailure=.
+# Currently a no-op; wire alerting (push notification, log shipper, etc.) here.
+# systemd activates it on failure — it must NOT be enabled or started directly.
+ExecStart=/bin/true

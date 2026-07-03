@@ -1,0 +1,61 @@
+{{ ansible_managed | comment }}
+# Rendered by roles/headscale. Do not edit by hand; change the role defaults or
+# host_vars and re-converge. Key names follow the headscale 0.26.x schema.
+
+# Coordination endpoint advertised to clients. Falls back to the node's MagicDNS
+# name when the fleet has not pinned substrate_headscale_url yet.
+server_url: {{ substrate_headscale_url if substrate_headscale_url else 'http://' ~ ansible_hostname ~ '.' ~ substrate_tailnet_domain ~ ':8080' }}
+
+# Bind addresses. The coordination API bind is a role/host_vars decision
+# (loopback by default; an environment opts into a reachable bind); metrics and
+# gRPC stay loopback-only.
+listen_addr: {{ headscale_listen_addr }}
+metrics_listen_addr: {{ headscale_metrics_listen_addr }}
+grpc_listen_addr: {{ headscale_grpc_listen_addr }}
+grpc_allow_insecure: false
+
+# Noise protocol key for the control <-> client channel.
+noise:
+  private_key_path: {{ headscale_data_dir }}/noise_private.key
+
+# Tailnet address space handed out to nodes.
+prefixes:
+  v4: {{ headscale_prefix_v4 }}
+  v6: {{ headscale_prefix_v6 }}
+  allocation: sequential
+
+# Use Tailscale's shared DERP relays; do not run an embedded DERP server.
+derp:
+  server:
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  auto_update_enabled: true
+  update_frequency: 24h
+
+disable_check_updates: true
+ephemeral_node_inactivity_timeout: 30m
+
+database:
+  type: sqlite
+  sqlite:
+    path: {{ headscale_data_dir }}/db.sqlite
+
+log:
+  format: text
+  level: info
+
+# MagicDNS: every node resolves <hostname>.{{ substrate_tailnet_domain }};
+# non-tailnet queries are forwarded to the global resolvers.
+dns:
+  magic_dns: true
+  base_domain: {{ substrate_tailnet_domain }}
+  nameservers:
+    global:
+{% for ns in headscale_global_nameservers %}
+      - {{ ns }}
+{% endfor %}
+  search_domains: []
+
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: "0770"
