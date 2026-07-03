@@ -1,0 +1,14 @@
+#!/bin/sh
+{{ ansible_managed | comment }}
+# Serve the wildcard cert to tailnet peers ONLY. Binds a static file server to the
+# node's tailscale IPv4 so the key never leaves the tailnet; refuses to start off
+# the tailnet. Managed by roles/cert_issuer.
+set -eu
+
+IP="$(tailscale ip -4 2>/dev/null | head -n1)"
+if [ -z "$IP" ]; then
+    echo "no tailscale IPv4 address; refusing to serve certs off-tailnet" >&2
+    exit 1
+fi
+
+exec python3 -m http.server {{ cert_issuer_serve_port }} --bind "$IP" --directory "{{ cert_issuer_serve_dir }}"

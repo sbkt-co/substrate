@@ -1,0 +1,8 @@
+---
+# systemd-guarded so the unprivileged check-mode converge (no systemd, package
+# not installed) never tries to poke a service that cannot exist there.
+- name: Restart headscale
+  ansible.builtin.systemd:
+    name: "{{ headscale_service_name }}"
+    state: restarted
+  when: ansible_service_mgr == 'systemd'
