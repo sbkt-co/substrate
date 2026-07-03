@@ -47,7 +47,8 @@ Environments are branches — the branch a node tracks is its environment.
 
 **Why the branch is not in `host_vars`:** the branch seed lives in `/etc/substrate/branch` (written at bootstrap, never in the repo) so `host_vars/<hostname>.yml` stays identical across `main` and `staging`, keeping fast-forward promotion clean. Move a node between environments by rewriting `/etc/substrate/branch` or re-bootstrapping.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and conventions.
+See [RUNBOOK.md](RUNBOOK.md) for the day-to-day operator commands ("how do I actually use this")
+and [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and conventions.
 
 ## Network and TLS architecture
 
