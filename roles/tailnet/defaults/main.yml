@@ -1,0 +1,23 @@
+---
+# Tailnet membership via the official Tailscale client, enrolling against the
+# fleet's headscale coordination server.
+#
+# Enrolment consumes a node-local, single-use preauth key seeded (NOT stored in
+# git) at {{ tailnet_authkey_file }}. On a production node that key must be
+# delivered from a source the node itself can reach (cloud secret manager /
+# instance metadata) — never copied from an operator laptop. When the key is
+# absent this role skips enrolment with a loud warning rather than failing.
+tailnet_authkey_file: "{{ substrate_secrets_dir }}/tailnet-authkey"
+
+# Headscale coordination server the node logs in to (empty until an environment
+# pins substrate_headscale_url; enrolment is skipped while empty).
+tailnet_login_server: "{{ substrate_headscale_url }}"
+
+# Node name registered in the tailnet (MagicDNS: <hostname>.{{ substrate_tailnet_domain }}).
+tailnet_hostname: "{{ ansible_hostname }}"
+
+# Official Tailscale apt repository for Debian trixie.
+tailnet_apt_key_url: "https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg"
+tailnet_apt_keyring: /usr/share/keyrings/tailscale-archive-keyring.gpg
+tailnet_apt_repo_uri: "https://pkgs.tailscale.com/stable/debian"
+tailnet_apt_suite: trixie

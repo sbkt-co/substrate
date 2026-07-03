@@ -1,0 +1,104 @@
+---
+# Reconcile the PUBLIC Cloudflare zone for sbkt.co from the committed record
+# lists in vars/main.yml. Pull-based and idempotent: cloudflare_dns keys on
+# (record, type, value), so a converged zone reports changed=0 on re-run. The
+# zone is never enumerated or purged — only the listed records are touched.
+
+# ---------------------------------------------------------------------------
+# 1. Privacy guard. Internal names live under *.net.sbkt.co (owned by MagicDNS)
+#    and must never reach public DNS or CT logs. Refuse to converge if any
+#    managed record name matches the forbidden suffix. Runs unconditionally so
+#    a bad commit is caught even on nodes that don't otherwise manage DNS.
+# ---------------------------------------------------------------------------
+- name: Assert no managed record leaks an internal (MagicDNS) name
+  ansible.builtin.assert:
+    that:
+      - dns_records_present | selectattr('name', 'search', dns_forbidden_suffix) | list | length == 0
+      - dns_records_absent | selectattr('name', 'search', dns_forbidden_suffix) | list | length == 0
+    fail_msg: >-
+      A record name matches {{ dns_forbidden_suffix }}. Internal host names under
+      *.net.sbkt.co are owned by MagicDNS (headscale) and MUST NOT appear in the
+      public sbkt.co zone or Certificate Transparency logs. Remove it from the spec.
+    success_msg: "Public zone spec contains no internal (*.net.sbkt.co) names."
+
+- name: Reconcile public Cloudflare zone
+  when: dns_manage_enabled | bool
+  block:
+    # -----------------------------------------------------------------------
+    # 2. Ensure community.general is present ON THIS NODE. Fleet nodes ship
+    #    only ansible-core (ansible.cfg stays dependency-free), so this role
+    #    is the single, deliberate exception that self-installs the one
+    #    collection it needs. `creates:` on the root-install path makes it a
+    #    no-op once installed.
+    # -----------------------------------------------------------------------
+    - name: Ensure community.general collection is installed on this node
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection install community.general
+        # Default root-user install root: ~root/.ansible/collections.
+        creates: /root/.ansible/collections/ansible_collections/community/general
+
+    # -----------------------------------------------------------------------
+    # 3. Locate the API token file. If it is absent we warn loudly and SKIP
+    #    the whole reconcile — never fail. This is also what keeps the CI
+    #    check-mode converge green: no secret exists in the container.
+    # -----------------------------------------------------------------------
+    - name: Stat the Cloudflare API token file
+      ansible.builtin.stat:
+        path: "{{ dns_token_file }}"
+      register: dns_token_stat
+
+    - name: Warn and skip DNS reconcile when the token file is absent
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: Cloudflare API token not found at {{ dns_token_file }} —
+          SKIPPING public DNS reconcile for zone {{ dns_zone }}. To enable it,
+          place a file at that path containing a single line:
+          'CLOUDFLARE_API_TOKEN=<token>' (a scoped token with DNS:Edit on the
+          zone). No records were changed.
+      when: not dns_token_stat.stat.exists
+
+    # -----------------------------------------------------------------------
+    # 4 + 5. Token present: read it and reconcile the record lists.
+    # -----------------------------------------------------------------------
+    - name: Reconcile records against Cloudflare
+      when: dns_token_stat.stat.exists
+      block:
+        - name: Read the Cloudflare API token file
+          ansible.builtin.slurp:
+            src: "{{ dns_token_file }}"
+          register: dns_token_slurp
+          no_log: true
+
+        - name: Set the API token fact
+          ansible.builtin.set_fact:
+            dns_api_token: "{{ (dns_token_slurp.content | b64decode).split('=', 1)[1] | trim }}"
+          no_log: true
+
+        - name: Ensure present records exist in the public zone
+          community.general.cloudflare_dns:
+            api_token: "{{ dns_api_token }}"
+            zone: "{{ dns_zone }}"
+            record: "{{ item.name }}"
+            type: "{{ item.type }}"
+            value: "{{ item.value }}"
+            # Cloudflare requires ttl=1 ("automatic") for proxied records.
+            ttl: "{{ 1 if (item.proxied | default(false)) else (item.ttl | default(dns_default_ttl)) }}"
+            proxied: "{{ item.proxied | default(false) }}"
+            state: present
+          loop: "{{ dns_records_present }}"
+          loop_control:
+            label: "{{ item.type }} {{ item.name }}"
+          no_log: true
+
+        - name: Ensure absent records are removed from the public zone
+          community.general.cloudflare_dns:
+            api_token: "{{ dns_api_token }}"
+            zone: "{{ dns_zone }}"
+            record: "{{ item.name }}"
+            type: "{{ item.type }}"
+            value: "{{ item.value }}"
+            state: absent
+          loop: "{{ dns_records_absent }}"
+          loop_control:
+            label: "{{ item.type }} {{ item.name }}"
+          no_log: true

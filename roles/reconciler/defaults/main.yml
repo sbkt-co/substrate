@@ -10,3 +10,12 @@ reconciler_workdir: /var/lib/substrate/repo
 
 # Absolute path to ansible-pull. Overridable for venv-based installs.
 reconciler_ansible_pull_bin: /usr/bin/ansible-pull
+
+# Upper bound on a single converge. Type=oneshot defaults to
+# TimeoutStartSec=infinity, so a hung ansible-pull would otherwise wedge the
+# reconciler forever (see the service template for the full rationale).
+reconciler_timeout_start_sec: "10min"
+
+# Fleet-observability status file the service writes after every converge.
+# Written by systemd at runtime (ExecStopPost) — never templated by Ansible.
+reconciler_status_file: /etc/substrate/status.yml

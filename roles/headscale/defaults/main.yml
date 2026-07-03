@@ -1,0 +1,41 @@
+---
+# Pinned headscale release. Bump deliberately; the role only reinstalls when the
+# installed package version does not match this exact string.
+headscale_version: "0.26.1"
+
+# Map Ansible's architecture facts onto the arch slug used in headscale release
+# asset names. Covers the two fleet targets: cloud x86_64 and local aarch64.
+headscale_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+headscale_arch: "{{ headscale_arch_map[ansible_architecture] | default('amd64') }}"
+
+# Release .deb published on GitHub (e.g. headscale_0.26.1_linux_amd64.deb).
+headscale_deb_url: >-
+  https://github.com/juanfont/headscale/releases/download/v{{ headscale_version }}/headscale_{{ headscale_version }}_linux_{{ headscale_arch }}.deb
+headscale_deb_dest: "/tmp/headscale_{{ headscale_version }}_linux_{{ headscale_arch }}.deb"
+
+# Headscale runtime paths (match what the .deb's systemd unit expects).
+headscale_config_dir: /etc/headscale
+headscale_data_dir: /var/lib/headscale
+headscale_service_name: headscale
+
+# Listen addresses. The coordination API defaults to loopback so a node is never
+# reachable by default; an environment must explicitly opt into a reachable bind
+# (see host_vars/staging-core.yml) behind its own firewall/reverse proxy.
+# metrics/gRPC stay loopback-only.
+headscale_listen_addr: "127.0.0.1:8080"
+headscale_metrics_listen_addr: "127.0.0.1:9090"
+headscale_grpc_listen_addr: "127.0.0.1:50443"
+
+# Tailnet address space handed out to nodes.
+headscale_prefix_v4: "100.64.0.0/10"
+headscale_prefix_v6: "fd7a:115c:a1e0::/48"
+
+# Upstream resolvers MagicDNS forwards non-tailnet queries to.
+headscale_global_nameservers:
+  - "1.1.1.1"
+  - "8.8.8.8"
+
+# The headscale user (namespace) fleet nodes enrol into.
+headscale_user: substrate

@@ -21,6 +21,13 @@ emit() {
     echo "node image for converge: $1"
 }
 
+# Fast path for a persistent (self-hosted) runner: the prebaked image is already
+# in the local Incus store from a previous run, so just reuse it.
+if incus image info "$ALIAS" >/dev/null 2>&1; then
+    emit "$ALIAS"
+    exit 0
+fi
+
 # Cache hit: import the prebaked tarball and use it.
 tarball="$(ls "$CACHE_DIR"/*.tar.gz 2>/dev/null | head -1 || true)"
 if [ -n "$tarball" ]; then

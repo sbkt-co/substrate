@@ -1,0 +1,99 @@
+---
+# Install the Tailscale client from the official apt repo, run tailscaled under
+# systemd, and enrol the node into the fleet tailnet against headscale.
+#
+# Enrolment is guarded three ways and is a strict no-op once joined: it only runs
+# when systemd is the init, a login server is pinned, the single-use authkey has
+# been seeded, and the client is not already Running. A re-converge after a
+# successful join sees BackendState=Running and skips, so the single-use key is
+# consumed exactly once.
+
+- name: Install the Tailscale apt signing key
+  ansible.builtin.get_url:
+    url: "{{ tailnet_apt_key_url }}"
+    dest: "{{ tailnet_apt_keyring }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the Tailscale apt repository
+  # Write the deb822 .sources file directly rather than via
+  # ansible.builtin.deb822_repository / apt_repository: those import
+  # python3-debian / python3-apt on the target, but a substrate node is meant to
+  # converge with only ansible-core + python3 (same dependency-free ethos as
+  # ansible.cfg). A plain copy needs neither.
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/tailscale.sources
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      X-Repolib-Name: tailscale
+      Types: deb
+      URIs: {{ tailnet_apt_repo_uri }}
+      Suites: {{ tailnet_apt_suite }}
+      Components: main
+      Signed-By: {{ tailnet_apt_keyring }}
+  register: tailnet_apt_source
+
+- name: Refresh apt cache after adding the Tailscale repository
+  ansible.builtin.apt:
+    update_cache: true
+  when: tailnet_apt_source is changed
+
+- name: Install the Tailscale client
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+    update_cache: true
+
+- name: Enable and start tailscaled
+  ansible.builtin.systemd:
+    name: tailscaled
+    enabled: true
+    state: started
+  when: ansible_service_mgr == 'systemd'
+
+- name: Check for the seeded tailnet authkey
+  ansible.builtin.stat:
+    path: "{{ tailnet_authkey_file }}"
+  register: tailnet_authkey_stat
+
+- name: Warn and skip tailnet enrolment when prerequisites are missing
+  ansible.builtin.debug:
+    msg: >-
+      Tailnet enrolment SKIPPED on {{ inventory_hostname }}:
+      {% if not tailnet_authkey_stat.stat.exists %}authkey absent — seed a single-use
+      headscale preauth key at {{ tailnet_authkey_file }} (mode 0600) from a
+      node-reachable source (cloud secret manager / instance metadata).{% endif %}
+      {% if tailnet_login_server | length == 0 %} substrate_headscale_url is empty —
+      pin the coordination server URL before this node can join.{% endif %}
+  when: (not tailnet_authkey_stat.stat.exists) or (tailnet_login_server | length == 0)
+
+- name: Probe current tailnet backend state
+  ansible.builtin.command: tailscale status --json
+  register: tailnet_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Resolve the tailnet backend state
+  ansible.builtin.set_fact:
+    tailnet_backend_state: "{{ (tailnet_status.stdout | from_json).BackendState | default('Stopped') }}"
+  when:
+    - tailnet_status.stdout is defined
+    - tailnet_status.stdout | trim | length > 0
+
+- name: Enrol the node into the tailnet
+  ansible.builtin.command: >-
+    tailscale up
+    --login-server {{ tailnet_login_server }}
+    --auth-key file:{{ tailnet_authkey_file }}
+    --accept-dns=true
+    --hostname {{ tailnet_hostname }}
+  changed_when: true
+  when:
+    - ansible_service_mgr == 'systemd'
+    - tailnet_authkey_stat.stat.exists
+    - tailnet_login_server | length > 0
+    - (tailnet_backend_state | default('Stopped')) != 'Running'

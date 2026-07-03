@@ -16,10 +16,31 @@
     group: root
     mode: "0750"
 
+# Standalone-safety: the status file the service writes lives here. roles/common
+# usually creates it, but the reconciler must not depend on that ordering.
+- name: Ensure the substrate state directory exists
+  ansible.builtin.file:
+    path: "{{ reconciler_status_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Install reconciler service unit
   ansible.builtin.template:
     src: substrate-reconcile.service.j2
     dest: /etc/systemd/system/substrate-reconcile.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+# OnFailure extension point. Installed like the other units but never enabled or
+# started — systemd activates it automatically when the reconciler fails.
+- name: Install reconciler failure-handler unit
+  ansible.builtin.template:
+    src: substrate-reconcile-failure.service.j2
+    dest: /etc/systemd/system/substrate-reconcile-failure.service
     owner: root
     group: root
     mode: "0644"

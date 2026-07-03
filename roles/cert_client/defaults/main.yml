@@ -1,0 +1,11 @@
+---
+# Fetch the wildcard TLS cert from the tailnet cert issuer and install it
+# node-locally. Pull-model: if the issuer is unreachable (tailnet down or issuer
+# not serving yet) this role skips with a loud warning and the next reconcile
+# retries — it never fails the converge.
+#
+# The issuer host resolves via MagicDNS to the cert_issuer node's tailscale IP,
+# so the cert (and its key) only ever travel over the encrypted tailnet.
+cert_client_issuer_host: "staging-core.{{ substrate_tailnet_domain }}"
+cert_client_serve_port: 8444
+cert_client_dest_dir: /etc/substrate/certs
