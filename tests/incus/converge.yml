@@ -1,0 +1,44 @@
+---
+# Mirrors local.yml's bootstrap -> differentiate shape, but targets the Incus
+# system container over the incus connection (local.yml is pinned to
+# localhost/local for the real ansible-pull path). Applying the same roles with
+# the same group_vars against a real-systemd node is what makes this a faithful
+# deployment model rather than a lint check.
+- name: Converge substrate node (Incus system container)
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../../group_vars/all.yml
+
+  pre_tasks:
+    - name: Detect node-local tracked-branch seed (written at bootstrap)
+      ansible.builtin.stat:
+        path: /etc/substrate/branch
+      register: substrate_branch_seed_stat
+
+    - name: Read the tracked-branch seed
+      ansible.builtin.slurp:
+        src: /etc/substrate/branch
+      register: substrate_branch_seed
+      when: substrate_branch_seed_stat.stat.exists
+
+    - name: Pin substrate_branch to the node's seeded environment
+      ansible.builtin.set_fact:
+        substrate_branch: "{{ substrate_branch_seed.content | b64decode | trim }}"
+      when:
+        - substrate_branch_seed_stat.stat.exists
+        - (substrate_branch_seed.content | b64decode | trim) | length > 0
+
+  roles:
+    - common
+    - reconciler
+
+  tasks:
+    - name: Apply role-specific differentiation layers
+      ansible.builtin.include_role:
+        name: "{{ role_layer }}"
+      loop: "{{ node_roles | default([]) }}"
+      loop_control:
+        loop_var: role_layer

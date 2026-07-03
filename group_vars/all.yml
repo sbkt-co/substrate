@@ -1,0 +1,51 @@
+---
+# Canonical pointers to the control plane. Every node converges itself from
+# whatever is committed here on `main`. Override per-node in host_vars only if
+# a node must track a different branch (e.g. a canary).
+
+substrate_repo_url: "https://github.com/sbkt-co/substrate.git"
+# Fallback environment only. A real node's tracked branch is seeded at bootstrap
+# into /etc/substrate/branch and pinned by local.yml, so production nodes track
+# `main` and staging nodes track `staging` without per-node repo config (which
+# would break fast-forward promotion). This default is what the test harness and
+# a node with no seed fall back to.
+substrate_branch: "main"
+substrate_playbook: "local.yml"
+
+# How often a node reconciles itself against the control plane, and how much
+# random jitter to spread fleet-wide load. These drive the systemd timer the
+# reconciler role installs. Values use systemd time syntax.
+substrate_reconcile_interval: "15min"
+substrate_reconcile_splay: "120s"
+substrate_reconcile_on_boot_sec: "5min"
+
+# Default role layers applied to a node when host_vars/<hostname>.yml does not
+# specify any. The base substrate (common + reconciler) is always applied by
+# local.yml regardless of this list.
+node_roles: []
+
+# --- Tailnet + certificates (fleet-wide) ---
+
+# Node-local secret material lives here, seeded at bootstrap or by an operator
+# (same pattern as /etc/substrate/branch). Values NEVER live in this repo; the
+# repo only specifies the path a role reads. Roles that need a missing secret
+# skip with a loud warning rather than failing the whole converge.
+substrate_secrets_dir: /etc/substrate/secrets
+
+# Public apex domain (Cloudflare-managed) and the tailnet subdomain under it.
+# MagicDNS names every node <hostname>.{{ substrate_tailnet_domain }}; hosts
+# never get public DNS records and the only public cert artifact is the
+# wildcard, so internal topology stays out of CT logs and public DNS.
+substrate_domain: sbkt.co
+substrate_tailnet_domain: net.sbkt.co
+
+# Headscale coordination server URL as reachable BY CLIENTS. Environments set
+# this (staging points at the staging-core container; production at the public
+# headscale endpoint).
+substrate_headscale_url: ""
+
+# ACME: use the Let's Encrypt STAGING endpoint until the setup is trusted —
+# untrusted certs, but no rate-limit exposure while iterating. Flip to false
+# for real certs.
+substrate_acme_staging: true
+substrate_acme_email: "hostmaster@sbkt.co"

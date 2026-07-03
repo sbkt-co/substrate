@@ -1,0 +1,40 @@
+---
+# =============================================================================
+#  PUBLIC ZONE SPEC — sbkt.co  (committed source of truth)
+# =============================================================================
+#
+#  !!  THIS ZONE MUST NEVER CONTAIN INTERNAL HOST RECORDS  !!
+#
+#  MagicDNS (headscale) owns everything under *.net.sbkt.co. Internal topology
+#  — machine names, tailnet addresses, service hostnames — MUST stay out of
+#  public DNS. Publishing it here leaks the fleet's internal map into public
+#  resolvers AND into Certificate Transparency logs (permanent, unredactable).
+#  The privacy guard in tasks/main.yml refuses to converge if any name below
+#  matches *.net.sbkt.co; do not weaken it.
+#
+#  Records here are reconciled by (name, type, value):
+#    - dns_records_present : ensured to exist (state: present)
+#    - dns_records_absent  : ensured to NOT exist (state: absent)
+#  The zone is NEVER enumerated or purged — records not listed here are left
+#  untouched. Intentional removals go through dns_records_absent only.
+#
+#  Each entry: { name, type, value, ttl (optional), proxied (optional) }
+#    name    : record name (apex '@' or a public subdomain of sbkt.co)
+#    type    : A | AAAA | CNAME | TXT | MX | ...
+#    value   : record content
+#    ttl     : seconds; omit to use dns_default_ttl (proxied records force 1)
+#    proxied : true to enable the Cloudflare proxy (orange cloud)
+# =============================================================================
+
+# Records ensured present in the public zone.
+dns_records_present: []
+#  Examples (public names only — never *.net.sbkt.co):
+#  - { name: "@",    type: "A",     value: "203.0.113.10", proxied: true }
+#  - { name: "www",  type: "CNAME", value: "sbkt.co",      proxied: true }
+#  - { name: "@",    type: "MX",    value: "10 mx.example-mail.com" }
+#  - { name: "@",    type: "TXT",   value: "v=spf1 include:_spf.example.com ~all" }
+
+# Records ensured absent from the public zone (intentional removals only).
+dns_records_absent: []
+#  Examples:
+#  - { name: "old",  type: "A",     value: "203.0.113.99" }

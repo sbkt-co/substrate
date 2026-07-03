@@ -1,0 +1,27 @@
+---
+# Persistent local staging fleet, reached over the community.general.incus
+# connection plugin (incus exec — no SSH, no IP, no credentials). Each instance
+# is addressed fully by remote + project + name, so it is unambiguous even on a
+# host running many other (related or unrelated) Incus instances.
+#
+# The inventory hostnames EQUAL the launched instance names AND the containers'
+# own hostnames, so staging/converge.yml can load host_vars/<inventory_hostname>
+# directly and the reconciler inside each node resolves the same identity.
+#
+# Unlike the ephemeral test harness, these instances are long-lived: staging/up.sh
+# creates them with boot.autostart=true and never tears them down.
+all:
+  vars:
+    ansible_connection: community.general.incus
+    # colima-incus on macOS, or set SUBSTRATE_INCUS_REMOTE explicitly. up.sh
+    # exports this from the detected default remote.
+    ansible_incus_remote: "{{ lookup('env', 'SUBSTRATE_INCUS_REMOTE') | default('colima-incus', true) }}"
+    # Dedicated project isolates the staging fleet from everything else on the
+    # host — NEVER the shared `default` project. up.sh creates it and exports it.
+    ansible_incus_project: "{{ lookup('env', 'SUBSTRATE_STAGING_PROJECT') | default('substrate-staging', true) }}"
+    ansible_python_interpreter: /usr/bin/python3
+  hosts:
+    staging-core:
+      ansible_incus_host: staging-core
+    staging-web1:
+      ansible_incus_host: staging-web1

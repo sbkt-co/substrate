@@ -1,0 +1,8 @@
+---
+# Moderate profile: enforces fully-qualified module names, task naming, idempotent
+# patterns, and safe file permissions without the stricter role-var-prefix rules
+# that would fight the intentionally shared substrate_* / node_roles variables.
+profile: moderate
+
+exclude_paths:
+  - .git/

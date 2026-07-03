@@ -1,0 +1,18 @@
+---
+# The system container is reached over `incus exec` via the community.general
+# incus connection plugin — no SSH, no IP, no credentials. The instance is
+# addressed fully by remote + project + name, so it is unambiguous even on a host
+# running many other (related or unrelated) Incus instances. The host name must
+# match the launched container name (see tests/incus/run.sh).
+all:
+  hosts:
+    substrate-test:
+      ansible_connection: community.general.incus
+      # local on a Linux host with a native incus daemon; the colima remote
+      # (e.g. colima-incus) on macOS. run.sh exports this from the default remote.
+      ansible_incus_remote: "{{ lookup('env', 'SUBSTRATE_INCUS_REMOTE') | default('local', true) }}"
+      # Dedicated project isolates our test instances from everything else on the
+      # host; run.sh creates it and exports the name.
+      ansible_incus_project: "{{ lookup('env', 'SUBSTRATE_INCUS_PROJECT') | default('substrate-test', true) }}"
+      ansible_incus_host: substrate-test
+      ansible_python_interpreter: /usr/bin/python3

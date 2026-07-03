@@ -1,0 +1,25 @@
+---
+# Public Cloudflare zone reconciliation for sbkt.co.
+#
+# substrate_domain / substrate_secrets_dir are fleet-wide vars that live in
+# group_vars/all.yml on another in-flight branch. The | default() fallbacks
+# below keep this role self-contained until that lands; group_vars will
+# override them once merged. Do NOT redefine those globals here.
+
+# The public zone this role reconciles.
+dns_zone: "{{ substrate_domain | default('sbkt.co') }}"
+
+# Default record TTL (seconds) when a record does not pin its own.
+dns_default_ttl: 300
+
+# Path to the Cloudflare API token file the node reads at converge time.
+# Format: a single line `CLOUDFLARE_API_TOKEN=<token>`.
+dns_token_file: "{{ substrate_secrets_dir | default('/etc/substrate/secrets') }}/cloudflare-dns.ini"
+
+# Master switch: set false to skip DNS reconciliation on a node entirely.
+dns_manage_enabled: true
+
+# Privacy guard. Internal host names live under *.net.sbkt.co and are owned by
+# MagicDNS (headscale) — they must NEVER appear in the public zone or CT logs.
+# Any managed record name matching this suffix aborts the converge.
+dns_forbidden_suffix: '\.net\.sbkt\.co$'

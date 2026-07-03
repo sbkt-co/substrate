@@ -1,0 +1,7 @@
+---
+# Galaxy collections needed on the controller for the Incus converge test.
+# community.general provides the `community.general.incus` connection plugin,
+# which drives `incus exec` so Ansible can manage a system container with no SSH.
+collections:
+  - name: community.general
+    version: ">=9.0.0"

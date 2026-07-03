@@ -1,0 +1,12 @@
+---
+# Example: a staging/canary node. Copy to host_vars/<hostname>.yml.
+#
+# Its environment (the `staging` branch) is NOT set here — it is seeded at
+# bootstrap (SUBSTRATE_BRANCH=staging -> /etc/substrate/branch). This file only
+# carries per-node settings that are safe to keep identical across branches.
+#
+# Reconcile faster than production so drift and bad promotions surface quickly.
+substrate_reconcile_interval: "5min"
+substrate_reconcile_splay: "30s"
+
+node_roles: []

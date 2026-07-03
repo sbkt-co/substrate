@@ -1,0 +1,29 @@
+---
+# Base substrate applied to every node before any role differentiation.
+# Keep this minimal, idempotent, and distro-portable.
+
+- name: Ensure base packages are present
+  ansible.builtin.package:
+    name: "{{ common_base_packages }}"
+    state: present
+
+- name: Ensure substrate state directory exists
+  ansible.builtin.file:
+    path: "{{ common_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Record node identity and applied role layers
+  ansible.builtin.copy:
+    dest: "{{ common_state_dir }}/node.yml"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by substrate (roles/common). Do not edit by hand.
+      hostname: {{ ansible_hostname }}
+      fqdn: {{ ansible_fqdn }}
+      tracked_branch: {{ substrate_branch }}
+      roles: {{ node_roles | default([]) | to_yaml }}

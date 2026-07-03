@@ -1,0 +1,159 @@
+---
+name: ci
+
+# Two gates:
+#   validate  — fast, unprivileged: lint + syntax + check-mode converge (Docker
+#               toolchain image; same thing developers run via tests/run.sh).
+#               Runs on every PR and push — it is cheap.
+#   converge  — real convergence in an Incus system container (systemd as PID 1).
+#               It is expensive, so it is GATED: it runs only on pushes to
+#               main/staging that touch reconciler-relevant paths, on manual
+#               dispatch, or on a PR labelled `needs-converge`. It runs on a
+#               SELF-HOSTED runner (the Incus host) to avoid burning hosted
+#               minutes; the Install Incus step self-skips off github-hosted.
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Layer cache keyed (by buildx) on the Dockerfile + pinned requirements, so
+      # the apt + uv-install layers are reused until those inputs change. Safe:
+      # the toolchain versions are pinned, so a cache hit is byte-identical.
+      - name: Build validation image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: tests/Dockerfile
+          tags: substrate-ci
+          load: true
+          cache-from: type=gha,scope=validate
+          cache-to: type=gha,mode=max,scope=validate
+
+      - name: Run validation suite (lint + syntax + check-mode converge)
+        run: docker run --rm substrate-ci
+
+  # Cheap gate: decide whether reconciler-relevant files changed, so the
+  # expensive converge job can skip doc-only / unrelated changes.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      converge: ${{ steps.filter.outputs.converge }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Detect reconciler-relevant changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            converge:
+              - 'roles/**'
+              - 'local.yml'
+              - 'ansible.cfg'
+              - 'group_vars/**'
+              - 'host_vars/**'
+              - 'bootstrap/**'
+              - 'requirements.yml'
+              - 'tests/incus/**'
+              - 'staging/**'
+              - '.github/workflows/ci.yml'
+
+  converge:
+    needs: changes
+    # Run only when it is worth the cost:
+    #   - manual dispatch (always), or
+    #   - a PR explicitly labelled `needs-converge` (always), or
+    #   - a push to main/staging that touched reconciler-relevant paths.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'needs-converge')) ||
+      (github.event_name == 'push' && needs.changes.outputs.converge == 'true')
+    # The Incus host. On a self-hosted runner Incus is already installed; the
+    # Install Incus step below self-skips off github-hosted, so flipping this
+    # back to `ubuntu-latest` still works as a fallback.
+    runs-on: [self-hosted, linux, incus]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Only needed on github-hosted runners, which have no Incus and whose
+      # Docker install sets the iptables FORWARD policy to DROP (blocking the
+      # Incus bridge's NAT). The self-hosted Incus host already has all this.
+      - name: Install Incus
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://pkgs.zabbly.com/key.asc | sudo tee /etc/apt/keyrings/zabbly.asc >/dev/null
+          codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          arch="$(dpkg --print-architecture)"
+          sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.sources >/dev/null <<EOF
+          Enabled: yes
+          Types: deb
+          URIs: https://pkgs.zabbly.com/incus/stable
+          Suites: ${codename}
+          Components: main
+          Architectures: ${arch}
+          Signed-By: /etc/apt/keyrings/zabbly.asc
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y incus
+          sudo incus admin init --minimal
+          sudo sysctl -w net.ipv4.ip_forward=1
+          sudo iptables -P FORWARD ACCEPT
+          sudo usermod -aG incus-admin "$USER"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.8.22"
+          enable-cache: true
+
+      # Galaxy collections are version-pinned in requirements.yml, so key the
+      # cache on its hash — a bump invalidates, a hit is a fast no-op install.
+      - name: Cache Ansible collections
+        uses: actions/cache@v5
+        with:
+          path: ~/.ansible/collections
+          key: galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+
+      - name: Install Ansible + collections
+        run: |
+          uv tool install "ansible-core==2.18.6"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          ansible-galaxy collection install -r requirements.yml
+
+      # Prebake (base node image + python3/sudo) cached as a tarball, so the
+      # converge test skips the in-container apt entirely on a cache hit. On a
+      # self-hosted runner the image persists in Incus and is reused directly.
+      # Bump the key suffix to force a rebuild (e.g. for base-image updates).
+      - name: Cache prebaked node image
+        uses: actions/cache@v5
+        with:
+          path: /tmp/incus-image
+          key: incus-node-trixie-py3-v1
+
+      - name: Prepare prebaked node image
+        run: sg incus-admin -c 'tests/incus/prebake.sh'
+
+      - name: Real converge + idempotence + drift repair (Incus)
+        run: sg incus-admin -c 'tests/incus/run.sh'

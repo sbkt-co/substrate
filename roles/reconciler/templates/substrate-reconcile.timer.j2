@@ -1,0 +1,12 @@
+# Managed by substrate (roles/reconciler). Do not edit by hand.
+[Unit]
+Description=Schedule the substrate reconciler
+
+[Timer]
+OnBootSec={{ substrate_reconcile_on_boot_sec }}
+OnUnitInactiveSec={{ substrate_reconcile_interval }}
+RandomizedDelaySec={{ substrate_reconcile_splay }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

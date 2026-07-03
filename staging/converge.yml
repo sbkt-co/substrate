@@ -1,0 +1,66 @@
+---
+# Mirrors local.yml's bootstrap -> differentiate shape, but targets the
+# persistent staging Incus instances over the incus connection (local.yml is
+# pinned to localhost/local for the real ansible-pull path). Applying the same
+# roles with the same group_vars against real-systemd nodes is what makes this a
+# faithful deployment model of the staging fleet rather than a lint check.
+#
+# up.sh converges hosts one at a time with --limit (order matters: staging-core
+# first so it can mint a preauth key for the tailnet), so this plays against
+# `all` and lets the caller scope with --limit.
+- name: Converge substrate staging node (persistent Incus instance)
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../group_vars/all.yml
+
+  pre_tasks:
+    # Inventory hostnames equal the instance hostnames, so load identity keyed by
+    # inventory_hostname directly (the incus connection makes ansible_hostname
+    # match too, but this keeps host_var resolution independent of fact gathering).
+    - name: Resolve node identity (load host_vars/<inventory_hostname>.yml if present)
+      ansible.builtin.include_vars: "{{ item }}"
+      vars:
+        _candidates:
+          - "../host_vars/{{ inventory_hostname }}.yml"
+      with_first_found:
+        - files: "{{ _candidates }}"
+          skip: true
+
+    - name: Detect node-local tracked-branch seed (written at bootstrap)
+      ansible.builtin.stat:
+        path: /etc/substrate/branch
+      register: substrate_branch_seed_stat
+
+    - name: Read the tracked-branch seed
+      ansible.builtin.slurp:
+        src: /etc/substrate/branch
+      register: substrate_branch_seed
+      when: substrate_branch_seed_stat.stat.exists
+
+    - name: Pin substrate_branch to the node's seeded environment
+      ansible.builtin.set_fact:
+        substrate_branch: "{{ substrate_branch_seed.content | b64decode | trim }}"
+      when:
+        - substrate_branch_seed_stat.stat.exists
+        - (substrate_branch_seed.content | b64decode | trim) | length > 0
+
+    - name: Report resolved environment and role layers
+      ansible.builtin.debug:
+        msg: >-
+          Converging {{ inventory_hostname }} on branch '{{ substrate_branch }}'
+          with base substrate + role layers: {{ node_roles | default([]) }}
+
+  roles:
+    - common
+    - reconciler
+
+  tasks:
+    - name: Apply role-specific differentiation layers
+      ansible.builtin.include_role:
+        name: "{{ role_layer }}"
+      loop: "{{ node_roles | default([]) }}"
+      loop_control:
+        loop_var: role_layer
