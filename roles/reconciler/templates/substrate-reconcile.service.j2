@@ -4,6 +4,8 @@ Description=Substrate reconciler (ansible-pull from main)
 Documentation={{ substrate_repo_url }}
 After=network-online.target
 Wants=network-online.target
+# Activated by systemd only when this unit fails; wires in alerting later.
+OnFailure=substrate-reconcile-failure.service
 
 [Service]
 Type=oneshot
@@ -18,5 +20,15 @@ ExecStart={{ reconciler_ansible_pull_bin }} \
     --inventory localhost, \
     {{ substrate_playbook }}
 # A failed converge must surface but must not wedge the node; the timer retries.
+# Type=oneshot defaults to TimeoutStartSec=infinity, and the timer's
+# OnUnitInactiveSec never fires while this unit is still activating — so one hung
+# ansible-pull (e.g. a stalled git fetch) would permanently stop reconciliation.
+# 10min exceeds any normal converge yet stays under the 15min timer interval.
+TimeoutStartSec={{ reconciler_timeout_start_sec }}
+# Record the outcome for fleet observability. $SERVICE_RESULT/$EXIT_STATUS are
+# only set in ExecStopPost. Write atomically (tmp + mv) so readers never see a
+# torn file. Literal percent signs are doubled (%%) because systemd expands %
+# specifiers in unit files; Jinja passes % through untouched.
+ExecStopPost=/bin/sh -c 'printf "last_run: %%s\nresult: %%s\nexit_status: %%s\n" "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)" "$SERVICE_RESULT" "${EXIT_STATUS:-}" > {{ reconciler_status_file }}.tmp && mv {{ reconciler_status_file }}.tmp {{ reconciler_status_file }}'
 Nice=10
 IOSchedulingClass=best-effort
