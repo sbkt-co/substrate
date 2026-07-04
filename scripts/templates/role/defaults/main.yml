@@ -1,0 +1,21 @@
+---
+# roles/__ROLE__/defaults/main.yml
+#
+# Conventions (see docs/architecture.md section 5):
+#   - Put EVERY tunable here with a documented, safe default so a node can
+#     override it in host_vars/<hostname>.yml. Never redefine fleet-wide vars
+#     from group_vars/all.yml (e.g. substrate_secrets_dir, substrate_domain).
+#   - Anything that must differ per environment (an issuer host, a listen addr)
+#     gets a safe default here and is overridden in host_vars — the tree stays
+#     identical across main and staging so ff-promotion is clean.
+#
+# All role vars are prefixed with the role name to avoid collisions.
+
+# TODO: real defaults. Examples of the shape (delete/replace):
+__ROLE___package: __ROLE__            # apt package to install
+__ROLE___service: __ROLE__           # systemd unit to manage
+__ROLE___enabled: true
+
+# Secret file this role reads (if any). Read fresh every converge; absent -> the
+# role skips loudly (never fails). Keep the VALUE out of git — only the path.
+# __ROLE___secret_file: "{{ substrate_secrets_dir }}/__ROLE__.token"

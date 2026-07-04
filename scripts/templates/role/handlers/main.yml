@@ -1,0 +1,11 @@
+---
+# roles/__ROLE__/handlers/main.yml
+#
+# Restart-on-config-change handlers, guarded so the check-mode converge in a
+# plain container (CI validate) never tries to talk to systemd.
+
+- name: Restart __ROLE__
+  ansible.builtin.systemd:
+    name: "{{ __ROLE___service }}"
+    state: restarted
+  when: ansible_service_mgr == 'systemd'

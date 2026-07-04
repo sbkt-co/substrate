@@ -54,7 +54,7 @@ Environments are branches — the branch a node tracks is its environment.
 
 **Why the branch is not in `host_vars`:** the branch seed lives in `/etc/substrate/branch` (written at bootstrap, never in the repo) so `host_vars/<hostname>.yml` stays identical across `main` and `staging`, keeping fast-forward promotion clean. Move a node between environments by rewriting `/etc/substrate/branch` or re-bootstrapping.
 
-See [RUNBOOK.md](RUNBOOK.md) for the day-to-day operator commands ("how do I actually use this")
+See [docs/runbook.md](docs/runbook.md) for the day-to-day operator commands ("how do I actually use this")
 and [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and conventions.
 
 ## Network and TLS architecture
@@ -69,7 +69,7 @@ This is the fleet's network design, implemented by the `headscale`, `tailnet`, `
 
 **Staging fleet** — the staging environment runs as persistent Incus system containers on owned hardware, bootstrapped onto the `staging` branch. They run the same reconciler and join a real tailnet, at zero cloud cost.
 
-For the full rationale and layered detail, see [ARCHITECTURE.md](ARCHITECTURE.md); for the secret-handling model (what lives where, how it is seeded, rotation), see [SECRETS.md](SECRETS.md).
+For the full rationale and layered detail, see [docs/architecture.md](docs/architecture.md); for the secret-handling model (what lives where, how it is seeded, rotation), see [docs/secrets.md](docs/secrets.md).
 
 ## Fleet topology
 

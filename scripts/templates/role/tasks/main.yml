@@ -1,0 +1,56 @@
+---
+# roles/__ROLE__/tasks/main.yml
+#
+# Load-bearing patterns (do not strip them — see docs/architecture.md section 5):
+#   - Fully-qualified module names (ansible.builtin.*), state-based modules over
+#     command/shell.
+#   - Every systemd-touching task guarded `when: ansible_service_mgr == 'systemd'`
+#     so the unprivileged check-mode converge (CI validate) stays green in a
+#     plain container while real nodes still install/start units.
+#   - Secrets: stat the file, skip LOUDLY if absent, never fail the converge;
+#     no_log on any task touching secret content.
+#   - Quoted file modes ("0644"), owner/group set explicitly.
+
+- name: Install the __ROLE__ package
+  ansible.builtin.apt:
+    name: "{{ __ROLE___package }}"
+    state: present
+  # TODO: add update_cache/repo setup if this comes from a non-default repo.
+
+# --- Secret handling (delete this block if the role needs no secret) ---------
+- name: Check for the __ROLE__ secret
+  ansible.builtin.stat:
+    path: "{{ __ROLE___secret_file | default('') }}"
+  register: __ROLE___secret_stat
+  when: (__ROLE___secret_file | default('')) | length > 0
+
+- name: Warn and skip __ROLE__ when its secret is absent
+  ansible.builtin.debug:
+    msg: >-
+      __ROLE__ SKIPPED on {{ inventory_hostname }}: secret
+      {{ __ROLE___secret_file }} is absent. Seed it (mode 0600) from a
+      node-reachable source; the next reconcile will pick it up.
+  when:
+    - (__ROLE___secret_file | default('')) | length > 0
+    - not (__ROLE___secret_stat.stat.exists | default(false))
+
+- name: Render the __ROLE__ config from its secret
+  ansible.builtin.template:
+    src: config.j2          # TODO: create roles/__ROLE__/templates/config.j2
+    dest: /etc/__ROLE__/config
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart __ROLE__
+  when:
+    - (__ROLE___secret_file | default('')) | length > 0
+    - __ROLE___secret_stat.stat.exists | default(false)
+# --- end secret block --------------------------------------------------------
+
+- name: Enable and start __ROLE__
+  ansible.builtin.systemd:
+    name: "{{ __ROLE___service }}"
+    enabled: "{{ __ROLE___enabled }}"
+    state: "{{ __ROLE___enabled | ternary('started', 'stopped') }}"
+  when: ansible_service_mgr == 'systemd'
