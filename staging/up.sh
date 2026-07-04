@@ -201,6 +201,10 @@ mint_join_converge() {
         echo "failed to obtain a headscale preauth key from $CORE for $name" >&2
         return 1
     fi
+    # No trailing newline here; bootstrap.sh writes the key with one. Both are
+    # fine — the tailnet role reads it via `tailscale up --auth-key file:...` and
+    # Tailscale strips surrounding whitespace — so the two seeding paths are
+    # interchangeable despite the cosmetic difference.
     printf '%s' "$key" | \
         incus_in file push - "$name/etc/substrate/secrets/tailnet-authkey" --mode 0600
     unset key

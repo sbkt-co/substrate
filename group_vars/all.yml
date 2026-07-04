@@ -1,14 +1,14 @@
 ---
 # Canonical pointers to the control plane. Every node converges itself from
-# whatever is committed here on `main`. Override per-node in host_vars only if
-# a node must track a different branch (e.g. a canary).
+# whatever is committed here on the branch it tracks.
 
 substrate_repo_url: "https://github.com/sbkt-co/substrate.git"
-# Fallback environment only. A real node's tracked branch is seeded at bootstrap
-# into /etc/substrate/branch and pinned by local.yml, so production nodes track
-# `main` and staging nodes track `staging` without per-node repo config (which
-# would break fast-forward promotion). This default is what the test harness and
-# a node with no seed fall back to.
+# This default is the fallback when no /etc/substrate/branch seed exists (e.g.
+# the test harness). Production/staging nodes have their tracked branch seeded at
+# bootstrap into /etc/substrate/branch and pinned by local.yml, so production
+# tracks `main` and staging tracks `staging` without per-node repo config. Never
+# override substrate_branch in host_vars — that would break fast-forward
+# promotion (host_vars must stay identical across main and staging).
 substrate_branch: "main"
 substrate_playbook: "local.yml"
 
@@ -39,9 +39,17 @@ substrate_secrets_dir: /etc/substrate/secrets
 substrate_domain: sbkt.co
 substrate_tailnet_domain: net.sbkt.co
 
-# Headscale coordination server URL as reachable BY CLIENTS. Environments set
-# this (staging points at the staging-core container; production at the public
-# headscale endpoint).
+# Headscale coordination server URL as reachable BY CLIENTS. Left empty here
+# because it is topology-specific and MUST be set per-node in host_vars for any
+# node that runs the `tailnet` or `headscale` role — there is no safe fleet-wide
+# default. Examples:
+#   - staging fleet: "http://staging-core.incus:8080" (see host_vars/staging-*.yml)
+#   - production:    "https://<core-node>.net.sbkt.co:8080" once the tailnet is up,
+#                    or the public headscale endpoint if one is fronted.
+# First bring-up ordering note: a production core node must converge headscale and
+# join its own tailnet before this URL resolves for peers. A node whose tailnet
+# role runs before the coordinator is reachable skips enrollment with a warning
+# and retries on the next reconcile — set the URL and re-converge the core first.
 substrate_headscale_url: ""
 
 # ACME: use the Let's Encrypt STAGING endpoint until the setup is trusted —

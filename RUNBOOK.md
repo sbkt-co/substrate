@@ -60,8 +60,9 @@ SUBSTRATE_INCUS_REMOTE=colima-incus staging/up.sh
 ## 3. Seed or rotate a secret
 
 Secrets are root-only files on the node, never in git. The three files
-(see CLAUDE.md layout) live in `/etc/substrate/secrets/`. On a real
-node they're seeded by env vars at bootstrap (workflow 2). To place one
+live in `/etc/substrate/secrets/`. On a real node they're seeded by env
+vars at bootstrap (workflow 2). For the full model — which file holds
+what, scopes, and rotation — see [SECRETS.md](SECRETS.md). To place one
 by hand, e.g. the ACME token on staging-core:
 
 ```sh

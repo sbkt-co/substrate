@@ -11,6 +11,15 @@
     group: root
     mode: "0755"
 
+- name: Warn and skip when no cert issuer is configured
+  ansible.builtin.debug:
+    msg: >-
+      Cert fetch SKIPPED on {{ inventory_hostname }}: cert_client_issuer_host is
+      unset. Set it in host_vars/<hostname>.yml to the MagicDNS name of the
+      designated cert_issuer node (e.g. staging-core.{{ substrate_tailnet_domain }}).
+      There is no fleet-wide default because the issuer node differs per topology.
+  when: cert_client_issuer_host | length == 0
+
 - name: Fetch the wildcard fullchain from the tailnet issuer
   ansible.builtin.uri:
     url: "http://{{ cert_client_issuer_host }}:{{ cert_client_serve_port }}/fullchain.pem"
@@ -19,6 +28,7 @@
   register: cert_client_fullchain
   failed_when: false
   check_mode: false
+  when: cert_client_issuer_host | length > 0
 
 - name: Warn and skip when the tailnet cert issuer is unreachable
   ansible.builtin.debug:
@@ -28,7 +38,9 @@
       unreachable (status {{ cert_client_fullchain.status | default('n/a') }}).
       The tailnet may be down or the issuer not serving yet — the next reconcile
       will retry.
-  when: cert_client_fullchain.status | default(-1) != 200
+  when:
+    - cert_client_issuer_host | length > 0
+    - cert_client_fullchain.status | default(-1) != 200
 
 - name: Fetch the wildcard private key from the tailnet issuer
   ansible.builtin.uri:

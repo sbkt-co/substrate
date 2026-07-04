@@ -44,17 +44,22 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
+# Install ansible-core (not the full `ansible` package): ansible.cfg is
+# deliberately dependency-free, roles need only ansible-core, and role-required
+# collections come from requirements.yml — pulling the full `ansible` bundle would
+# drag in a large set of collections the repo never uses and may version-pin them
+# differently. On Debian trixie `ansible-core` is packaged directly.
 install_prereqs() {
     if command -v apt-get >/dev/null 2>&1; then
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -y
-        apt-get install -y --no-install-recommends git ansible ca-certificates
+        apt-get install -y --no-install-recommends git ansible-core ca-certificates
     elif command -v dnf >/dev/null 2>&1; then
         dnf install -y git ansible-core ca-certificates
     elif command -v yum >/dev/null 2>&1; then
-        yum install -y git ansible ca-certificates
+        yum install -y git ansible-core ca-certificates
     elif command -v apk >/dev/null 2>&1; then
-        apk add --no-cache git ansible ca-certificates
+        apk add --no-cache git ansible-core ca-certificates
     else
         log "no supported package manager found (apt/dnf/yum/apk)" >&2
         exit 1

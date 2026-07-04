@@ -6,6 +6,12 @@
 #
 # The issuer host resolves via MagicDNS to the cert_issuer node's tailscale IP,
 # so the cert (and its key) only ever travel over the encrypted tailnet.
-cert_client_issuer_host: "staging-core.{{ substrate_tailnet_domain }}"
+#
+# REQUIRED override: there is deliberately no fleet-wide default, because which
+# node runs cert_issuer differs per topology (staging-core in the staging fleet;
+# a designated core node in production). Set this per-node in host_vars to the
+# MagicDNS name of the issuer, e.g. "staging-core.{{ substrate_tailnet_domain }}".
+# When left empty the role skips enrolment with a loud warning (never fails).
+cert_client_issuer_host: ""
 cert_client_serve_port: 8444
 cert_client_dest_dir: /etc/substrate/certs

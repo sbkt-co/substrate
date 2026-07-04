@@ -98,23 +98,25 @@ incus exec --project substrate-staging staging-web1 -- tailscale status
 incus exec --project substrate-staging staging-web1 -- \
     getent hosts staging-core.net.sbkt.co
 
-# the cert issuer serves the wildcard cert over the tailnet (bound to the
-# tailscale IP); fetch it from web1
+# the cert issuer serves the wildcard cert over the tailnet (plain HTTP bound to
+# the tailscale IP — the tailnet is the encryption layer); fetch it from web1
 incus exec --project substrate-staging staging-web1 -- \
-    curl -sk https://staging-core.net.sbkt.co:8444/fullchain.pem | head -c 64
+    curl -s http://staging-core.net.sbkt.co:8444/fullchain.pem | head -c 64
 ```
 
-(`net.sbkt.co` is `substrate_tailnet_domain`; the cert server listens on `:8444`
-over the tailnet only.)
+(`net.sbkt.co` is `substrate_tailnet_domain`; the cert server is a plain
+`python3 -m http.server` on `:8444`, reachable over the tailnet only — `cert_client`
+fetches it via `http://`.)
 
 ## Self-reconciliation
 
 Each node's `/etc/substrate/branch` seed is `staging`, so the in-container
-reconciler timer runs `ansible-pull` of the **`staging`** git branch. That means
-self-reconciliation only goes live once this work has **landed on the `staging`
-branch** — until then `up.sh` converges the current working tree by hand. After
-the branch lands, the fleet reconciles itself from git and `up.sh` is only needed
-to (re)create instances or re-seed secrets.
+reconciler timer runs `ansible-pull` of the **`staging`** git branch. Once the
+instances are live and reconciling, `up.sh` is only needed to **(re)create
+instances or re-seed secrets** — ongoing convergence happens by itself via the
+in-container reconciler timer, exactly as on a real node. (`up.sh` also converges
+the current working tree directly, which is handy for iterating on a change
+before it is pushed to the `staging` branch.)
 
 ## Production secret seeding (pull model)
 
