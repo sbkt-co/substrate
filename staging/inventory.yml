@@ -13,9 +13,11 @@
 all:
   vars:
     ansible_connection: community.general.incus
-    # colima-incus on macOS, or set SUBSTRATE_INCUS_REMOTE explicitly. up.sh
-    # exports this from the detected default remote.
-    ansible_incus_remote: "{{ lookup('env', 'SUBSTRATE_INCUS_REMOTE') | default('colima-incus', true) }}"
+    # up.sh always exports SUBSTRATE_INCUS_REMOTE from the detected default remote
+    # (colima-incus on macOS, local on Linux), so the normal path overrides this.
+    # The fallback is `local` to match tests/incus/inventory.yml — Linux-sensible
+    # for a bare direct invocation; macOS users go through up.sh (or export it).
+    ansible_incus_remote: "{{ lookup('env', 'SUBSTRATE_INCUS_REMOTE') | default('local', true) }}"
     # Dedicated project isolates the staging fleet from everything else on the
     # host — NEVER the shared `default` project. up.sh creates it and exports it.
     ansible_incus_project: "{{ lookup('env', 'SUBSTRATE_STAGING_PROJECT') | default('substrate-staging', true) }}"

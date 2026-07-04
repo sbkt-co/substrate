@@ -71,6 +71,10 @@
 - name: Create the fleet headscale user (namespace)
   ansible.builtin.command: headscale users create {{ headscale_user }}
   changed_when: true
+  # Exact-match on the parsed JSON, not a substring of the raw output: a user
+  # named e.g. "substrate-admin" must NOT satisfy the check for "substrate".
   when:
     - ansible_service_mgr == 'systemd'
-    - headscale_user not in (headscale_users.stdout | default(''))
+    - >-
+      headscale_users.stdout | default('[]') | from_json
+      | selectattr('name', 'equalto', headscale_user) | list | length == 0

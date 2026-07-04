@@ -85,6 +85,10 @@ tests/incus/colima-up.sh          # starts the `incus` colima profile (--runtime
 on a Linux host), so the same script works on both. Stop it later with
 `colima stop incus` — the Docker profile is unaffected.
 
+Colima only hosts the Incus daemon on macOS dev machines; Linux hosts (including
+the self-hosted CI runner) run Incus natively; production nodes have neither
+Colima nor Docker.
+
 ### Controller prerequisites
 
 `ansible-core` + the `community.general` collection (for the incus connection):

@@ -63,6 +63,11 @@
   changed_when: >-
     ('Successfully received certificate' in cert_issuer_issue.stdout)
     or ('Renewing an existing certificate' in cert_issuer_issue.stdout)
+  # The systemd guard is NOT because certbot needs systemd (it does not) — it is
+  # to keep real ACME issuance out of the check-mode / plain-container CI harness
+  # (which has no systemd as PID 1), where a live DNS-01 challenge would hang or
+  # burn rate limit. On a real node systemd is PID 1, so this runs normally once
+  # the Cloudflare credentials are present. Do not remove it to "simplify".
   when:
     - ansible_service_mgr == 'systemd'
     - cert_issuer_cf_stat.stat.exists

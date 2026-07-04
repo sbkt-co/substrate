@@ -1,6 +1,6 @@
 # Managed by substrate (roles/reconciler). Do not edit by hand.
 [Unit]
-Description=Substrate reconciler (ansible-pull from main)
+Description=Substrate reconciler (ansible-pull from {{ substrate_branch }})
 Documentation={{ substrate_repo_url }}
 After=network-online.target
 Wants=network-online.target

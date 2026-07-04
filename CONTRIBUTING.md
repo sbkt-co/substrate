@@ -11,15 +11,28 @@ accordingly — a merge to `main` changes production.
   soak before changes reach prod.
 
 A node's environment is seeded once at bootstrap (`/etc/substrate/branch`), not
-configured in `host_vars`. See `CLAUDE.md` → *Branching & promotion* for why.
+configured in `host_vars`. Deriving the branch from the repo would be circular,
+and pinning it in `host_vars` would make that file differ between `main` and
+`staging` — which breaks fast-forward promotion (see the `--ff-only` rule below).
+So `host_vars/<hostname>.yml` stays identical across branches; move a node between
+environments by rewriting its `/etc/substrate/branch` seed. [README.md](README.md)
+covers the same model in public-facing terms.
 
 ## The rules
 
 1. **PRs only.** Never commit directly to `main` or `staging`. Open a PR from a
    short-lived feature branch.
-2. **CI must pass.** Both the `validate` (lint + syntax + check-mode converge)
-   and `converge` (real Incus convergence + idempotence) jobs must be green
-   before merge. Configure branch protection to require them.
+2. **CI must pass.** The `validate` job (lint + syntax + check-mode converge)
+   runs on every PR and push and must be green. The `converge` job (real Incus
+   convergence + idempotence) is expensive and therefore **gated** — it does
+   *not* run on ordinary PRs. It runs automatically on pushes to `main`/`staging`
+   that touch reconciler-relevant paths (`roles/`, `local.yml`, `ansible.cfg`,
+   `group_vars/`, `host_vars/`, `bootstrap/`, `requirements.yml`, `tests/incus/`,
+   `staging/`, the CI workflow), on manual `workflow_dispatch`, and on PRs carrying
+   the `needs-converge` label. **If your PR touches any of those paths, add the
+   `needs-converge` label** so real convergence is exercised before merge; a
+   docs-only or unrelated PR can skip it. Configure branch protection to require
+   `validate` (and `converge` where you rely on the label gate).
 3. **Promote by fast-forward only.** Changes flow
    `feature → PR → staging → main`:
 
@@ -56,6 +69,30 @@ run the real convergence test (matches the CI `converge` job):
 tests/incus/colima-up.sh   # macOS: Incus alongside Docker (first time only)
 tests/incus/run.sh
 ```
+
+## Adding a new service role
+
+Roles are the differentiation layer — a node selects them via `node_roles`. To
+add one:
+
+1. **Scaffold** `roles/<name>/` with `tasks/main.yml`, `defaults/main.yml`, and
+   `handlers/main.yml` as needed. Put every tunable in `defaults/` (role vars) so
+   a node can override it in `host_vars`; never hard-code environment specifics.
+2. **Wire it in** by adding `<name>` to `node_roles` in the relevant
+   `host_vars/<hostname>.yml`. `local.yml` applies it on top of the base
+   substrate automatically — nothing else selects roles.
+3. **Guard systemd-dependent tasks** with `when: ansible_service_mgr ==
+   'systemd'` so the unprivileged check-mode converge (CI `validate`) stays
+   green in a plain container while still running normally on a real node.
+4. **Keep secrets out of git.** Read secret material from a node-local file under
+   `{{ substrate_secrets_dir }}`; if it is absent, skip the dependent tasks with
+   a loud `debug` warning rather than failing the converge (see `cert_issuer` /
+   `cert_client` for the pattern).
+5. **Add a verify step.** Extend `tests/incus/converge.yml` / `verify.yml` (the
+   real-convergence harness) to assert the role's units/files land and are
+   active, mirroring how the reconciler is verified.
+6. **Label the PR `needs-converge`** — adding a role touches `roles/`, so real
+   convergence should run before merge.
 
 ## Conventions
 

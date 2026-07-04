@@ -8,7 +8,7 @@
 # local.yml against the container itself (localhost). It needs no privileges,
 # so it drops straight into a GitHub Actions runner. A full systemd converge
 # (actually starting the reconciler timer) is out of scope here — see
-# tests/README.md for the molecule/privileged path.
+# tests/README.md for the Incus harness (`tests/incus/run.sh`).
 FROM debian:trixie-slim
 
 # uv is the Python installer/resolver (pinned, reproducible).

@@ -20,3 +20,8 @@ substrate_reconcile_splay: "30s"
 # Headscale coordination server URL as reached by clients within the staging
 # fleet. Points at the staging-core container over the Incus-provided DNS name.
 substrate_headscale_url: "http://staging-core.incus:8080"
+
+# The cert_issuer node this client fetches the wildcard cert from, by MagicDNS
+# name over the tailnet. Required per-node (cert_client has no fleet-wide default
+# because the issuer differs per topology); staging-core is the issuer here.
+cert_client_issuer_host: "staging-core.net.sbkt.co"

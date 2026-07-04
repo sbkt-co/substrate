@@ -12,14 +12,19 @@ group_vars/all.yml             # control-plane pointers + reconcile schedule (ca
 host_vars/<hostname>.yml       # per-node identity: which role layers a node selects (node_roles)
 bootstrap/bootstrap.sh         # one-shot fresh-node bootstrap (e.g. cloud-init user-data)
 roles/common/                  # base substrate every node gets (always applied)
-roles/reconciler/              # installs the systemd timer that runs ansible-pull from main
+roles/reconciler/              # installs the systemd timer that runs ansible-pull (tracked branch)
+roles/headscale/               # tailnet coordination server (one core node)
+roles/tailnet/                 # joins the node to the headscale tailnet (Tailscale client)
+roles/cert_issuer/             # issues the wildcard cert (DNS-01) + serves it over the tailnet
+roles/cert_client/             # fetches the wildcard cert from the issuer over the tailnet
+roles/dns/                     # reconciles the PUBLIC Cloudflare zone for sbkt.co from git
 /etc/substrate/secrets/        # root-only (0700) credential files seeded at bootstrap:
   tailnet-authkey              #   Tailscale auth key (SUBSTRATE_TAILNET_AUTHKEY)
   cloudflare-dns.ini           #   DNS-edit API token (SUBSTRATE_CLOUDFLARE_TOKEN)
   cloudflare.ini               #   ACME/certbot TXT-only token (SUBSTRATE_ACME_TOKEN)
 ```
 
-Role differentiation layers (e.g. `roles/webserver/`) are added under `roles/` and selected per-node via `node_roles` in `host_vars/<hostname>.yml`.
+Additional role differentiation layers (e.g. `roles/webserver/`) are added under `roles/` and selected per-node via `node_roles` in `host_vars/<hostname>.yml`. See `ARCHITECTURE.md` for the layered network/TLS/topology design and `SECRETS.md` for the secret-handling model.
 
 ## Commands
 
@@ -53,7 +58,7 @@ Environments are **branches**, because in a pull model the branch is the unit a 
 
 Rules:
 
-1. **PRs only** into `main`/`staging` — never commit directly. Branch protection should require the CI `validate` + `converge` jobs to pass before anything lands on a branch nodes pull from.
+1. **PRs only** into `main`/`staging` — never commit directly. Branch protection should require the CI `validate` job on every PR; the `converge` job is **gated** (runs on `workflow_dispatch`, on PRs labelled `needs-converge`, and on pushes to `main`/`staging` touching reconciler-relevant paths — see `CONTRIBUTING.md`), so require it where you rely on that label gate. Label reconciler-affecting PRs `needs-converge` so real convergence runs before merge.
 2. **Flow:** feature branch → PR → CI → merge to `staging` → soak on staging nodes → **promote to `main` by fast-forward** (`git switch main && git merge --ff-only staging`, via PR).
 3. **`--ff-only` is mandatory.** It guarantees `main` and `staging` never diverge — staging is only ever "`main` plus not-yet-promoted commits." This is what prevents environment drift, so **everything must be ff-mergeable**: don't commit env-specific differences that exist on one branch but not the other.
 
