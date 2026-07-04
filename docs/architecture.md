@@ -1,9 +1,9 @@
 # Architecture
 
 How `substrate` is put together and why. This is the map operators read before
-touching the fleet. For day-to-day commands see [RUNBOOK.md](RUNBOOK.md); for the
-contribution workflow see [CONTRIBUTING.md](CONTRIBUTING.md); for secret handling
-see [SECRETS.md](SECRETS.md).
+touching the fleet. For day-to-day commands see [runbook.md](runbook.md); for the
+contribution workflow see [../CONTRIBUTING.md](../CONTRIBUTING.md); for secret handling
+see [secrets.md](secrets.md).
 
 The one-paragraph model: GitHub is the control plane. Every node converges
 *itself* by running `ansible-pull` on a systemd timer against the branch it
@@ -86,7 +86,7 @@ t0  FIRST BOOT (cloud-init runs bootstrap/bootstrap.sh as root)
       - write /etc/substrate/branch      <- SUBSTRATE_BRANCH  (the environment seed)
       - install -d -m 0700 /etc/substrate/secrets
       - seed secret files (0600) from env vars: tailnet-authkey,
-        cloudflare-dns.ini, cloudflare.ini   (values never logged; see SECRETS.md)
+        cloudflare-dns.ini, cloudflare.ini   (values never logged; see secrets.md)
       - exec:  ansible-pull --url <repo> --checkout <branch> --purge -i localhost, local.yml
 
 t0+  FIRST CONVERGE (local.yml)
@@ -280,7 +280,7 @@ Conventions: idempotent by construction; secrets read from
 Node-local files under `/etc/substrate/secrets` (dir `0700`, files `0600`), seeded
 at bootstrap from env vars, read fresh on every converge, never in git. Scoping,
 rotation, blast radius, and the graduation path to a cloud secret manager are
-covered in **[SECRETS.md](SECRETS.md)**.
+covered in **[secrets.md](secrets.md)**.
 
 ---
 
