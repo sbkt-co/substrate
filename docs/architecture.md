@@ -34,12 +34,14 @@ group_vars/all.yml        # fleet-wide canonical vars: repo url, substrate_branc
 host_vars/<hostname>.yml  # per-node IDENTITY: node_roles list + safe overrides
                           #   (reconcile cadence, substrate_headscale_url, headscale_listen_addr).
                           #   The tracked branch is NEVER here (see below).
-bootstrap/bootstrap.sh    # one-shot fresh-node bootstrap (cloud-init user-data). Installs git+ansible,
+bootstrap/bootstrap.sh    # one-shot fresh-node bootstrap (cloud-init user-data). Installs git+ansible+age,
                           #   writes /etc/substrate/branch, creates /etc/substrate/secrets (0700),
-                          #   seeds secret files from env vars, exec's the first ansible-pull.
+                          #   generates the node age identity (age.key, prints only the PUBLIC key),
+                          #   seeds secret files from env vars (fallback), exec's the first ansible-pull.
 
 roles/common/             # base substrate every node gets: base packages, /etc/substrate state dir,
-                          #   /etc/substrate/node.yml identity record (hostname, fqdn, tracked_branch, roles).
+                          #   /etc/substrate/node.yml identity record, and SOPS secret distribution
+                          #   (installs sops+age, decrypts committed secrets/*.sops.yaml the node holds a key for).
 roles/reconciler/         # installs ansible, creates the checkout dir, installs three systemd units
                           #   (reconcile.service + failure-handler + timer), enables/starts the timer,
                           #   writes /etc/substrate/status.yml via ExecStopPost.
@@ -82,10 +84,12 @@ Single timeline, fresh node to reconcile loop:
 
 ```
 t0  FIRST BOOT (cloud-init runs bootstrap/bootstrap.sh as root)
-      - install git + ansible-core via the host package manager
+      - install git + ansible-core + age via the host package manager
       - write /etc/substrate/branch      <- SUBSTRATE_BRANCH  (the environment seed)
       - install -d -m 0700 /etc/substrate/secrets
-      - seed secret files (0600) from env vars: tailnet-authkey,
+      - generate node age identity (age.key 0600, PRIVATE never printed);
+        print the PUBLIC key in a marked REGISTER-THIS-NODE-KEY block
+      - seed secret files (0600) from env vars (FALLBACK): tailnet-authkey,
         cloudflare-dns.ini, cloudflare.ini   (values never logged; see secrets.md)
       - exec:  ansible-pull --url <repo> --checkout <branch> --purge -i localhost, local.yml
 
@@ -95,7 +99,8 @@ t0+  FIRST CONVERGE (local.yml)
         - stat + slurp /etc/substrate/branch -> set_fact substrate_branch
         - debug: report resolved environment + node_roles
       roles (always, in order):
-        - common     -> base packages, /etc/substrate/, node.yml identity record
+        - common     -> base packages, /etc/substrate/, node.yml identity record,
+                        SOPS decrypt of committed secrets this node holds a key for
         - reconciler -> ansible install, checkout dir, 3 systemd units, enable+start timer
       tasks:
         - include_role loop over node_roles (headscale, tailnet, cert_issuer,
@@ -277,10 +282,17 @@ Conventions: idempotent by construction; secrets read from
 
 ## 6. Secrets
 
-Node-local files under `/etc/substrate/secrets` (dir `0700`, files `0600`), seeded
-at bootstrap from env vars, read fresh on every converge, never in git. Scoping,
-rotation, blast radius, and the graduation path to a cloud secret manager are
-covered in **[secrets.md](secrets.md)**.
+Roles read node-local files under `/etc/substrate/secrets` (dir `0700`, files
+`0600`), fresh on every converge. Values ride git only as **SOPS ciphertext
+encrypted to node-held age keys**: each node generates its own age identity at
+bootstrap (`age.key`, never leaves the node), and `roles/common` decrypts the
+committed `secrets/*.sops.yaml` it is a recipient of — driven by the
+`substrate_sops_secrets` manifest — into those dest files. Workstation-held decrypt
+keys stay banned (laptop-off invariant); the operator workstation only *encrypts*
+(public-key) via `scripts/secret.sh`. Bootstrap env-var / manual seeding remains a
+supported fallback for not-yet-registered nodes. Scoping, rotation, blast radius,
+the SOPS carve-out, and the graduation path are covered in
+**[secrets.md](secrets.md)**.
 
 ---
 

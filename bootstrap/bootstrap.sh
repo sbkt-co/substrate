@@ -29,6 +29,13 @@
 #   Two separate Cloudflare files/tokens is deliberate: DNS-edit scope vs
 #   ACME TXT-only scope = smaller blast radius if either credential leaks.
 #
+# Node-held SOPS key (primary secret mechanism — see docs/secrets.md):
+#   This bootstrap generates a per-node age identity at
+#   $SECRETS_DIR/age.key (0600, PRIVATE, never printed) and prints the matching
+#   PUBLIC key in a marked block. Register that public key (once) so the node can
+#   decrypt the committed secrets it is a recipient of. The SUBSTRATE_* env seeds
+#   above remain a supported FALLBACK for not-yet-registered nodes / emergencies.
+#
 set -euo pipefail
 
 REPO_URL="${SUBSTRATE_REPO_URL:-https://github.com/sbkt-co/substrate.git}"
@@ -49,17 +56,20 @@ fi
 # collections come from requirements.yml — pulling the full `ansible` bundle would
 # drag in a large set of collections the repo never uses and may version-pin them
 # differently. On Debian trixie `ansible-core` is packaged directly.
+# `age` is installed here too: the node needs age-keygen to mint its own SOPS
+# identity below, and roles/common installs sops (no trixie apt package) to
+# decrypt committed secrets on every converge. age IS packaged on trixie.
 install_prereqs() {
     if command -v apt-get >/dev/null 2>&1; then
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -y
-        apt-get install -y --no-install-recommends git ansible-core ca-certificates
+        apt-get install -y --no-install-recommends git ansible-core ca-certificates age
     elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y git ansible-core ca-certificates
+        dnf install -y git ansible-core ca-certificates age
     elif command -v yum >/dev/null 2>&1; then
-        yum install -y git ansible-core ca-certificates
+        yum install -y git ansible-core ca-certificates age
     elif command -v apk >/dev/null 2>&1; then
-        apk add --no-cache git ansible-core ca-certificates
+        apk add --no-cache git ansible-core ca-certificates age
     else
         log "no supported package manager found (apt/dnf/yum/apk)" >&2
         exit 1
@@ -80,6 +90,40 @@ printf '%s\n' "$BRANCH" > /etc/substrate/branch
 
 # Provision the secrets directory unconditionally (0700; root-only).
 install -d -m 0700 "$SECRETS_DIR"
+
+# Generate this node's age identity (PRIMARY secret mechanism). The PRIVATE key
+# stays on the node (0600) and is NEVER printed; only the PUBLIC key is emitted,
+# in a marked block, so the operator can register the node as a recipient of the
+# committed SOPS secrets. Idempotent: an existing key is reused, not overwritten.
+AGE_KEY_FILE="${SECRETS_DIR}/age.key"
+if command -v age-keygen >/dev/null 2>&1; then
+    if [ ! -f "$AGE_KEY_FILE" ]; then
+        log "generating node age identity at ${AGE_KEY_FILE} (private key never printed)"
+        ( umask 077; age-keygen -o "$AGE_KEY_FILE" >/dev/null 2>&1 )
+        chmod 0600 "$AGE_KEY_FILE"
+    fi
+    # Derive the public key from the private identity (does not expose the secret).
+    AGE_PUBKEY="$(age-keygen -y "$AGE_KEY_FILE" 2>/dev/null || true)"
+    if [ -n "$AGE_PUBKEY" ]; then
+        cat >&2 <<EOF
+
+# =====================================================================
+# REGISTER THIS NODE KEY so it can decrypt committed secrets:
+#
+#   scripts/secret.sh register-node ${AGE_PUBKEY} \\
+#       --groups <dns_nodes|acme_nodes|tailnet_nodes[,...]>
+#
+# then commit + PR the updated .sops.yaml and secrets/*.sops.yaml.
+# The node picks up any secret it becomes a recipient of on its next
+# reconcile. (Private key stays on this node and was never printed.)
+# =====================================================================
+
+EOF
+    fi
+else
+    log "age-keygen not found — skipping node age identity; SOPS secret" \
+        "distribution will be inactive until age is installed and a key registered"
+fi
 
 # Seed optional credential files from environment variables.  Each file is
 # written with umask 077 so it is created 0600.  The variable VALUE is never

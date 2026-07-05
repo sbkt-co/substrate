@@ -8,8 +8,11 @@ Guidance for Claude Code working in this repo. These instructions override defau
 and is **differentiated** into its role with no manual steps. **GitHub is the control plane** — the
 tracked branch is the single source of truth; there is no authoritative state outside git. Reconciliation
 is **pull-based**: each node runs `ansible-pull` on a systemd timer and converges itself idempotently,
-repairing drift even when the branch is unchanged. There is **no local control plane** — no SOPS, no
+repairing drift even when the branch is unchanged. There is **no local control plane** — no
 operator-driven pushes, no laptop-held keys; the fleet must be fully operable with your laptop off.
+Secrets ride git as SOPS ciphertext encrypted to **node-held** age keys (each node decrypts itself on
+converge; see `docs/secrets.md`) — workstation-held SOPS/vault keys stay banned, and only revocable
+material may be committed.
 
 ## Commands
 

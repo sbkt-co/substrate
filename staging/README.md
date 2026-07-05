@@ -108,6 +108,26 @@ incus exec --project substrate-staging staging-web1 -- \
 `python3 -m http.server` on `:8444`, reachable over the tailnet only — `cert_client`
 fetches it via `http://`.)
 
+## SOPS node keys (staging)
+
+Staging nodes are ordinary substrate nodes: at bring-up each generates its own
+age identity under `/etc/substrate/secrets/age.key` and (like a real bootstrap)
+its public key is available for registration. `up.sh` behaviour is unchanged — it
+still seeds `tailnet-authkey` and the Cloudflare token as node-local files, which
+remains the quickest path for the local harness. If you want a staging node to
+pull a secret from git instead, read its public key and register it the same way
+as any node, then `encrypt` the value:
+
+```sh
+# read a staging node's age public key
+incus exec --project substrate-staging staging-core -- age-keygen -y /etc/substrate/secrets/age.key
+# register it (from the repo checkout) and encrypt a value, then commit + PR
+scripts/secret.sh register-node <age1pubkey> --groups acme_nodes,dns_nodes
+printf '%s' "$TOKEN" | scripts/secret.sh encrypt acme
+```
+
+See [../docs/secrets.md](../docs/secrets.md) and the encrypt-secret skill.
+
 ## Self-reconciliation
 
 Each node's `/etc/substrate/branch` seed is `staging`, so the in-container

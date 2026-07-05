@@ -27,3 +27,9 @@
       fqdn: {{ ansible_fqdn }}
       tracked_branch: {{ substrate_branch }}
       roles: {{ node_roles | default([]) | to_yaml }}
+
+# Distribute SOPS-encrypted secrets committed in the repo, decrypted with this
+# node's own age identity. Kept in a separate file for readability; skips loudly
+# (never fails the converge) on every expected "cannot decrypt" state.
+- name: Distribute committed SOPS secrets this node can decrypt
+  ansible.builtin.import_tasks: sops.yml

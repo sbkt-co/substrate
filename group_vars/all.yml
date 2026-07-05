@@ -32,6 +32,25 @@ node_roles: []
 # skip with a loud warning rather than failing the whole converge.
 substrate_secrets_dir: /etc/substrate/secrets
 
+# SOPS-encrypted secret distribution (node-held keys). This manifest is the
+# committed spec that drives roles/common's decrypt loop: each entry names a
+# ciphertext file committed under secrets/ (encrypted to the age public keys
+# registered in .sops.yaml) and the canonical node-local dest file a role parses.
+# The plaintext byte-for-byte matches what the seeding/env fallback would write
+# (see docs/secrets.md); only nodes registered as recipients can decrypt an entry,
+# and non-recipients skip it loudly. Values NEVER live here — only ciphertext file
+# paths. Add/rotate a value with:  scripts/secret.sh encrypt <name>  (then commit).
+substrate_sops_secrets:
+  - src: "secrets/cloudflare-dns.sops.yaml"      # roles/dns  (CLOUDFLARE_API_TOKEN=<value>)
+    dest: "{{ substrate_secrets_dir }}/cloudflare-dns.ini"
+    mode: "0600"
+  - src: "secrets/acme.sops.yaml"                # roles/cert_issuer (dns_cloudflare_api_token = <value>)
+    dest: "{{ substrate_secrets_dir }}/cloudflare.ini"
+    mode: "0600"
+  - src: "secrets/tailnet-authkey.sops.yaml"     # roles/tailnet (raw one-line preauth key)
+    dest: "{{ substrate_secrets_dir }}/tailnet-authkey"
+    mode: "0600"
+
 # Public apex domain (Cloudflare-managed) and the tailnet subdomain under it.
 # MagicDNS names every node <hostname>.{{ substrate_tailnet_domain }}; hosts
 # never get public DNS records and the only public cert artifact is the
