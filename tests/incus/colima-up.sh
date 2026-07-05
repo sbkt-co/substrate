@@ -23,7 +23,9 @@ echo
 echo "Incus runtime ready in colima profile '${PROFILE}'."
 echo "Default incus remote: $(incus remote get-default 2>/dev/null || echo '?')"
 echo "Default docker profile is unaffected:"
+
 colima list
+
 echo
 echo "Run the real-converge test with:  tests/incus/run.sh"
 echo "Stop the Incus runtime later with: colima stop ${PROFILE}"
