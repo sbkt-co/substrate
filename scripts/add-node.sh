@@ -100,5 +100,10 @@ Next:
   1. Edit host_vars/${HOSTNAME_ARG}.yml: set node_roles (and any required
      overrides, e.g. cert_client_issuer_host / substrate_headscale_url).
   2. PR it via the runbook flow (branch off staging -> tests/run.sh -> PR).
-  See docs/runbook.md workflow 2 and docs/secrets.md for the secret-seeding caveats.
+  3. Register the node's SOPS key (PRIMARY secret path). Bootstrap prints a marked
+     'REGISTER THIS NODE KEY' block with the node's age PUBLIC key; register it
+     into the groups matching its roles, then commit + PR:
+       scripts/secret.sh register-node <age1pubkey> --groups <dns_nodes|acme_nodes|tailnet_nodes[,...]>
+     The node decrypts any secret it becomes a recipient of on its next reconcile.
+  See docs/runbook.md workflow 2 and docs/secrets.md for the secret mechanism and caveats.
 EOF

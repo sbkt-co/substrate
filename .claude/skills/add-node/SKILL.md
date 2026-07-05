@@ -27,6 +27,20 @@ Steps:
 
 3. PR it via the runbook flow (branch off `staging` -> `tests/run.sh` -> PR).
 
+4. Register the node's SOPS key so it can decrypt committed secrets. At bootstrap
+   the node prints a marked `REGISTER THIS NODE KEY` block with its age PUBLIC
+   key. Take that pubkey and register it into the groups matching the node's
+   roles (dns_nodes / acme_nodes / tailnet_nodes):
+
+   ```sh
+   scripts/secret.sh register-node <age1pubkey> --groups tailnet_nodes,dns_nodes
+   ```
+
+   Then commit + PR the updated `.sops.yaml` (and re-keyed `secrets/*.sops.yaml`).
+   The node decrypts any secret it becomes a recipient of on its next reconcile.
+   See the encrypt-secret skill. Until registered, seed values via the fallback
+   seed-secret skill.
+
 Give the user the bootstrap snippet to paste on the fresh node. See
 docs/runbook.md workflow 2, and docs/secrets.md for the seeding caveats (only single-use /
 scoped tokens belong in cloud-init user-data).

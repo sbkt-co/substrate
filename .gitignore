@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .vault_pass
 .DS_Store
+# Never commit private age identities. Only secrets/*.sops.yaml (ciphertext) and
+# .sops.yaml (public-key recipient config) belong in git.
+age.key
+keys.txt
+*.agekey

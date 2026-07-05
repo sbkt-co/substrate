@@ -1,0 +1,53 @@
+---
+# Decrypt ONE committed SOPS secret if this node is a recipient, and write it to
+# its canonical dest. Included per-entry from sops.yml with `sops_secret` set to a
+# {src, dest, mode} manifest item. Every failure mode here is EXPECTED and skipped
+# with a single loud warning — this file NEVER fails the converge.
+#
+# The decrypt probe runs check_mode:false / changed_when:false / failed_when:false
+# so it is a pure read that stays green in check mode and reports a clean rc we can
+# branch on. no_log:true guards every task that touches plaintext.
+
+- name: "Locate committed ciphertext for {{ sops_secret.dest }}"
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/{{ sops_secret.src }}"
+  register: sops_src_stat
+
+- name: "Decrypt committed secret (no-op if this node is not a recipient) for {{ sops_secret.dest }}"
+  ansible.builtin.command:
+    cmd: "{{ common_sops_bin }} --decrypt --output-type json {{ playbook_dir }}/{{ sops_secret.src }}"
+  environment:
+    SOPS_AGE_KEY_FILE: "{{ common_sops_age_key_file }}"
+  register: sops_decrypt
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+  when: sops_src_stat.stat.exists
+
+- name: "Write decrypted content to {{ sops_secret.dest }}"
+  ansible.builtin.copy:
+    content: "{{ (sops_decrypt.stdout | from_json).content }}"
+    dest: "{{ sops_secret.dest }}"
+    owner: root
+    group: root
+    mode: "{{ sops_secret.mode | default('0600') }}"
+  no_log: true
+  when:
+    - sops_src_stat.stat.exists
+    - sops_decrypt.rc | default(1) == 0
+    - (sops_decrypt.stdout | default('')) | length > 0
+
+- name: "Warn and skip undecryptable secret for {{ sops_secret.dest }}"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: SOPS secret {{ sops_secret.src }} was NOT applied to
+      {{ sops_secret.dest }} —
+      {{ 'ciphertext not present in the checkout' if not sops_src_stat.stat.exists
+         else 'this node is not a recipient (decryption failed)' }}.
+      This is expected when the node is not registered for this secret; the dest
+      was left as-is. No converge failure.
+  when: >-
+    (not sops_src_stat.stat.exists)
+    or (sops_decrypt.rc | default(1) != 0)
+    or ((sops_decrypt.stdout | default('')) | length == 0)

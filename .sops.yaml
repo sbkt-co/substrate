@@ -1,0 +1,51 @@
+# SOPS creation rules for substrate's node-held-key secret distribution.
+#
+# HOW THIS WORKS
+#   Each secrets/<name>.sops.yaml is encrypted to the age PUBLIC keys of the nodes
+#   registered for its purpose. A node holds its own PRIVATE age identity
+#   (/etc/substrate/secrets/age.key, generated at bootstrap, never leaves the node)
+#   and decrypts only the files it is a recipient of. Any recipient in a file's
+#   group can decrypt it (a single sops key_group = OR over its members).
+#
+#   Recipient groups are the anchored lists in `keys:` below, one per secret file.
+#   Manage them ONLY through the script (it keeps this file and the ciphertext in
+#   sync and is idempotent):
+#
+#     scripts/secret.sh register-node <age1pubkey> --groups dns_nodes,acme_nodes
+#     scripts/secret.sh encrypt <name>          # then commit + PR
+#
+# NO KEYS ARE REGISTERED YET. Every group is an empty list, so sops REFUSES to
+# encrypt (a ciphertext with no recipients is unreadable) and secret.sh fails
+# loudly until a node key is registered. Register a node's key (printed at its
+# bootstrap) before running `encrypt`.
+#
+# PUBLIC-REPO CIPHERTEXT IS FOREVER: only ever encrypt REVOCABLE material here
+# (scoped/rotatable tokens, single-use preauth keys). See docs/secrets.md.
+---
+keys:
+  # Nodes running roles/dns — recipients of secrets/cloudflare-dns.sops.yaml
+  # (Cloudflare DNS:Edit token).
+  dns_nodes: &dns_nodes []
+  # Nodes running roles/cert_issuer — recipients of secrets/acme.sops.yaml
+  # (Cloudflare TXT-only ACME token).
+  acme_nodes: &acme_nodes []
+  # Nodes running roles/tailnet — recipients of secrets/tailnet-authkey.sops.yaml
+  # (single-use headscale preauth key).
+  tailnet_nodes: &tailnet_nodes []
+  # OPTIONAL operator convenience: `secret.sh register-node ... --groups operator`
+  # is sugar that adds the key to EVERY purpose group above (so an operator can
+  # read/rotate any secret from a workstation). This is NEVER required — the fleet
+  # decrypts with node-held keys and is fully operable with the laptop off. There
+  # is deliberately no `operator` anchor: sops cannot OR two key_groups without a
+  # Shamir threshold >= 2, so operators join the per-purpose lists instead.
+
+creation_rules:
+  - path_regex: secrets/cloudflare-dns\.sops\.yaml$
+    key_groups:
+      - age: *dns_nodes
+  - path_regex: secrets/acme\.sops\.yaml$
+    key_groups:
+      - age: *acme_nodes
+  - path_regex: secrets/tailnet-authkey\.sops\.yaml$
+    key_groups:
+      - age: *tailnet_nodes

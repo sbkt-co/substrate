@@ -1,0 +1,72 @@
+---
+# SOPS + age secret distribution with NODE-HELD keys.
+#
+# Model: the committed branch is the source of truth for secret VALUES too, but
+# only as ciphertext. Each node holds its OWN age identity (generated once at
+# bootstrap into {{ common_sops_age_key_file }}, mode 0600, never leaving the
+# node and never printed). group_vars/all.yml ships a manifest
+# (substrate_sops_secrets) mapping committed `secrets/<name>.sops.yaml` files to
+# the canonical node-local dest files the roles parse. This task installs the
+# tooling and, for every manifest entry this node is a recipient of, decrypts and
+# writes the dest — content-idempotently.
+#
+# Skip-loudly contract (recipients are per-purpose, so "cannot decrypt" is an
+# EXPECTED state, not an error): if the age identity is absent, sops is not yet
+# installed, the ciphertext is not in the checkout, or decryption fails because
+# this node is not a recipient, the entry is skipped with one loud debug warning.
+# The converge NEVER fails. This is also what keeps the unprivileged CI check-mode
+# converge green — no age key exists there, so all distribution is skipped.
+#
+# git is the source of truth: the decrypt task simply overwrites the dest. A
+# value seeded by hand (or by the bootstrap SUBSTRATE_* env fallback) is REPLACED
+# on the next converge if a sops file exists for it — that is the point.
+
+# --- Tooling: age (apt) + pinned sops release binary (no trixie apt package) ---
+
+- name: Ensure age is installed (SOPS age-recipient tooling)
+  ansible.builtin.package:
+    name: age
+    state: present
+
+- name: Probe the installed sops version
+  ansible.builtin.command: sops --version
+  register: common_sops_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install the pinned sops release binary
+  ansible.builtin.get_url:
+    url: "{{ common_sops_url }}"
+    dest: "{{ common_sops_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: common_sops_version not in (common_sops_installed.stdout | default(''))
+
+# --- Precondition: this node has an age identity to decrypt with ---
+
+- name: Detect the node age identity (SOPS decryption key)
+  ansible.builtin.stat:
+    path: "{{ common_sops_age_key_file }}"
+  register: common_sops_age_key
+
+- name: Report SOPS secret distribution is inactive (no node age identity)
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: no age identity at {{ common_sops_age_key_file }} — SKIPPING SOPS
+      secret distribution ({{ substrate_sops_secrets | default([]) | length }}
+      manifest entries). Generate one at bootstrap and register its public key
+      (scripts/secret.sh register-node), or seed secrets out-of-band. No secret
+      files were written from git.
+  when:
+    - not common_sops_age_key.stat.exists
+    - substrate_sops_secrets | default([]) | length > 0
+
+- name: Decrypt each committed SOPS secret this node is a recipient of
+  ansible.builtin.include_tasks: sops_decrypt.yml
+  loop: "{{ substrate_sops_secrets | default([]) }}"
+  loop_control:
+    loop_var: sops_secret
+    label: "{{ sops_secret.dest }}"
+  when: common_sops_age_key.stat.exists

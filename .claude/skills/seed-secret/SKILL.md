@@ -1,9 +1,16 @@
 ---
 name: seed-secret
-description: Seed or rotate a node-local secret (tailnet authkey, Cloudflare DNS token, ACME token) on a node or Incus instance. Use when placing or rotating a substrate secret.
+description: FALLBACK — seed a node-local secret file directly (tailnet authkey, Cloudflare DNS token, ACME token) on a node not yet key-registered, or in an emergency. Primary path is the encrypt-secret skill (SOPS in git). Use when a node has no age key registered yet or you must place a value out-of-band.
 ---
 
-# Seed / rotate a secret
+# Seed / rotate a secret (FALLBACK path)
+
+This is the FALLBACK mechanism. The PRIMARY path is the **encrypt-secret** skill
+(`scripts/secret.sh encrypt/rotate`): a SOPS-encrypted value in git that every
+registered node decrypts with its own node-held age key. Use seeding directly only
+when a node is not yet key-registered, or in an emergency where committing is not
+an option. Note: if a `secrets/<name>.sops.yaml` exists for the same dest, the next
+reconcile REPLACES a hand-seeded value with the git one — git is the source of truth.
 
 Secrets are root-only files under `/etc/substrate/secrets` on the node, never in
 git. Seeding and rotation are the same operation — write the file, the next

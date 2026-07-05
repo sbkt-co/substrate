@@ -8,3 +8,25 @@ common_base_packages:
 
 # Marker directory recording that a node is under substrate management.
 common_state_dir: /etc/substrate
+
+# --- SOPS + age node-held secret distribution ---
+# Every node holds its own age identity (generated at bootstrap, never leaves the
+# node) and decrypts the committed secrets it is a recipient of. See docs/secrets.md.
+#
+# The node's private age identity. Absent on nodes not yet key-registered and in
+# the CI check-mode container, in which case SOPS distribution is skipped loudly.
+common_sops_age_key_file: "{{ substrate_secrets_dir }}/age.key"
+
+# Pinned sops release. Debian trixie has no `sops` apt package, so we install the
+# upstream static release binary (arch-aware), version-check-guarded exactly like
+# roles/headscale installs its pinned .deb. Bump deliberately; the get_url only
+# runs when the installed version does not match this exact string.
+common_sops_version: "3.9.4"
+common_sops_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+common_sops_arch: "{{ common_sops_arch_map[ansible_architecture] | default('amd64') }}"
+# Release asset published on GitHub, e.g. sops-v3.9.4.linux.amd64.
+common_sops_url: >-
+  https://github.com/getsops/sops/releases/download/v{{ common_sops_version }}/sops-v{{ common_sops_version }}.linux.{{ common_sops_arch }}
+common_sops_bin: /usr/local/bin/sops
