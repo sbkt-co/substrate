@@ -61,7 +61,7 @@ NS_BLURBS=(
   "Promote staging to production (ff-only) and open PRs"
   "Onboard fleet nodes and inspect their status"
   "Scaffold new differentiation role layers"
-  "Seed, encrypt and rotate node-local secrets"
+  "Set a secret in one command (secret:set) and check status"
   "Bring up and inspect the local staging fleet"
   "Open and list the reference docs"
 )
@@ -131,6 +131,7 @@ task_prompt_spec() {
     node:add)                echo "NAME|New node hostname (lowercase DNS label, e.g. web-3)" ;;
     node:status)             echo "NODE|Staging instance name (e.g. staging-core)" ;;
     role:new)                echo "NAME|New role name (lowercase, [a-z0-9_], e.g. metrics_agent)" ;;
+    secret:set)              echo "NAME|Secret name (cloudflare-dns | acme | tailnet-authkey)" ;;
     staging:logs)            echo "NODE|Staging instance name (e.g. staging-core)" ;;
     staging:shell)           echo "NODE|Staging instance name (e.g. staging-core)" ;;
     docs:open)               echo "FILE|Doc name to open (see docs:list, e.g. runbook)" ;;
@@ -141,6 +142,10 @@ task_prompt_spec() {
 # An advisory note shown on the task screen, if any.
 task_note() {
   case "$1" in
+    secret:set)
+      echo "The one command: after NAME, the script asks for the VALUE with a HIDDEN prompt (or pipe it in), then opens a PR. The value is never echoed and never in argv." ;;
+    secret:status)
+      echo "Read-only: shows each secret's recipients and on-node state. Changes nothing." ;;
     secret:*)
       echo "Interactive: the secret VALUE is read from the underlying script's stdin and is never shown here." ;;
     ship:promote)

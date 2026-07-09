@@ -29,6 +29,77 @@ constraint governs secrets:
   skips, so one missing credential never wedges the fleet. Recipients are
   per-purpose, so "this node cannot decrypt that file" is an EXPECTED state.
 
+## The one command: `task secret:set`
+
+Day to day, secrets are **one command**. You do not need to know about age keys,
+`.sops.yaml`, recipient groups, or `register-node` — `secret:set` does all of it.
+
+```sh
+task secret:set NAME=acme          # or: scripts/secret.sh set acme
+```
+
+That is the whole mental model: **run it, answer the hidden prompt, approve the
+PR.** In order, `set`:
+
+1. resolves the name to the role that reads it and finds which nodes run that
+   role (from `host_vars` `node_roles`) — it prints the recipients it found;
+2. fetches each node's age **public** key and registers it (idempotent — says
+   "already registered" when nothing changes);
+3. reads the VALUE from a **hidden** prompt (with a confirm re-entry), or from
+   stdin if you pipe one in — never echoed, never in `argv`;
+4. encrypts it to `secrets/<name>.sops.yaml`;
+5. commits, pushes a `secret-set-<name>` branch, and opens a PR into `staging`.
+
+Merge the PR; the recipient nodes decrypt the value on their next reconcile.
+**Rotation is the same command** — run `secret:set` again with the new value,
+then revoke the old credential upstream (re-encrypting does not invalidate it).
+
+The three names and what reads them:
+
+| NAME | Role | Recipient nodes come from | Node file the role reads |
+|------|------|---------------------------|--------------------------|
+| `cloudflare-dns` | `dns` | nodes with `dns` in `node_roles` | `cloudflare-dns.ini` |
+| `acme` | `cert_issuer` | nodes with `cert_issuer` in `node_roles` | `cloudflare.ini` |
+| `tailnet-authkey` | `tailnet` | nodes with `tailnet` in `node_roles` | `tailnet-authkey` |
+
+Useful flags (pass after `--` from `task`, e.g. `task secret:set NAME=acme -- --dry-run`):
+
+- `--dry-run` — print the full plan (resolved recipients, keys to register, the
+  exact git + `gh` commands) and change nothing. Use it to preview.
+- `--target <host>[,<host2>]` — name recipient hosts directly, skipping the
+  `host_vars` discovery (useful before a node declares the role).
+- `--key <age1...>` — supply a pubkey for a host you cannot reach over incus
+  (e.g. a real cloud node — paste the pubkey it printed at bootstrap).
+- `--yes` — skip the confirmation prompt (automation).
+
+### See the state: `task secret:status`
+
+```sh
+task secret:status
+```
+
+Read-only. For each secret it shows whether the ciphertext is published, the
+recipient hosts (from the role mapping), and — best effort — whether each node
+already has the decrypted file. Run it before and after `set` to see what changed.
+
+### When a node has no age key yet
+
+`set` fetches keys over incus for staging nodes. A brand-new node (or a real
+cloud node) may not be reachable that way. `set` tells you exactly what to do:
+pass its bootstrap-printed pubkey with `--key <age1...>`, or seed the value
+node-locally as a stopgap with `task secret:seed` (the FALLBACK — see below).
+
+Everything past this point is **under the hood — you do not need it day to day.**
+
+---
+
+## Under the hood (you do not need this to use `secret:set`)
+
+The remaining sections document the machinery `secret:set` orchestrates:
+node-held age keys, the `.sops.yaml` recipient groups, the decrypt loop in
+`roles/common`, the manifest, and the manual/fallback paths. Read them when you
+are debugging, extending, or auditing the mechanism — not to publish a secret.
+
 ## Mechanism
 
 Two cooperating layers. The **roles are unchanged** by any of this — they always
@@ -80,12 +151,15 @@ env-seed at bootstrap, or a manual write.
 
 ## Seeding
 
-### Primary: encrypt into git, once registered
+### Primary: `task secret:set` (the one command above)
 
-"A secret is one command; everything else is a commit." Prereq: the node's age
-key is registered (its bootstrap output prints a `REGISTER THIS NODE KEY` block).
+The normal path is `task secret:set NAME=<name>` (documented at the top of this
+doc). It wraps everything below — registration, encryption, commit and PR — so
+you rarely touch the raw steps. The raw steps exist for when you are scripting
+the pieces yourself or debugging:
 
 ```sh
+# What `set` does under the hood, by hand:
 # 1. Register a node's PUBLIC age key into the groups matching its roles (once).
 scripts/secret.sh register-node <age1pubkey> --groups dns_nodes,tailnet_nodes
 
@@ -95,13 +169,13 @@ printf '%s' "$TOKEN" | scripts/secret.sh encrypt cloudflare-dns
 
 `encrypt` needs only public keys (no decryption, no node/operator private key). It
 refuses if the group has no recipients — a ciphertext with no recipients is
-unreadable. The node picks the value up on its next reconcile. Rotation is the
-same command via `scripts/secret.sh rotate <name>`.
+unreadable. The node picks the value up on its next reconcile.
 
 If `register-node` reports an existing secret was "NOT re-keyed" (no current
 recipient key on your machine to decrypt-and-re-encrypt it), just re-run
 `encrypt <name>` from the source value — that republishes to all recipients using
-only public keys, preserving the laptop-off invariant.
+only public keys, preserving the laptop-off invariant. (`secret:set` does exactly
+this automatically — it re-encrypts from the value you supply.)
 
 ### Fallback: bootstrap env vars and out-of-band writes
 
@@ -170,9 +244,11 @@ What a compromised node yields, honestly:
 
 ## Rotation
 
-Primary: `scripts/secret.sh rotate <name>` (encrypt a fresh value, commit+PR),
-then **revoke the old credential upstream** — re-encrypting does not invalidate
-the previous one. Force an immediate converge instead of waiting for the timer:
+Primary: **run `task secret:set NAME=<name>` again** with the fresh value (it is
+the same command for publish and rotate), then **revoke the old credential
+upstream** — re-encrypting does not invalidate the previous one. The raw
+equivalent is `scripts/secret.sh rotate <name>` (encrypt a fresh value, commit+PR).
+Force an immediate converge instead of waiting for the timer:
 
 ```sh
 systemctl start substrate-reconcile.service

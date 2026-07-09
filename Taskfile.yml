@@ -59,9 +59,11 @@ tasks:
 
           role:    new NAME=     scaffold a new differentiation role under roles/
 
-          secret:  seed          place a node-local secret (value via stdin)
-                   encrypt       (pending) sops-based secret distribution
-                   rotate        (pending) sops-based secret rotation
+          secret:  set NAME=     THE one command: prompt (hidden) + PR a secret
+                   status        show each secret: published? recipients? on-node?
+                   seed          FALLBACK: place a node-local secret (value via stdin)
+                   encrypt       advanced: raw sops encrypt (value via stdin)
+                   rotate        advanced: raw sops rotate  (value via stdin)
 
           staging: up            bring up / re-converge the local Incus fleet
                    status        incus list + tailscale status + MagicDNS check
@@ -382,9 +384,64 @@ tasks:
       - scripts/new-role.sh {{.NAME}}
 
   # --- secret: ------------------------------------------------------------
-  secret:seed:
-    desc: "Place a node-local secret; VALUE comes from stdin (never argv)"
+  # THE normal secret path is secret:set. seed/encrypt/rotate are fallbacks and
+  # advanced escape hatches that point back at secret:set.
+  secret:set:
+    desc: "THE one command: publish/rotate a secret (NAME=<name>) — hidden prompt, opens a PR"
     summary: |
+      The single command for secrets. You run this, answer ONE hidden prompt, and
+      approve the PR — everything else (which nodes are recipients, their age keys,
+      SOPS encryption, .sops.yaml, the branch/commit/push) is handled for you.
+
+      What it does, in order: resolves NAME to the role that reads it and discovers
+      which nodes run that role (from host_vars node_roles); fetches each node's age
+      PUBLIC key over incus and registers it; reads the VALUE (a HIDDEN prompt with
+      a confirm re-entry, or stdin if you pipe one in — never argv, never echoed);
+      encrypts to secrets/<name>.sops.yaml; then commits, pushes, and opens a PR
+      into staging. Merge it and the nodes pick the value up on their next reconcile.
+
+      NAME is one of: cloudflare-dns | acme | tailnet-authkey.
+      Flags after `--`:
+        --target h1[,h2]  name recipient hosts directly (skip host_vars discovery)
+        --key <age1...>   supply a pubkey for a host you cannot reach over incus
+        --dry-run         show the full plan (recipients, keys, git+gh) — no changes
+        --yes             skip the confirmation prompt (automation)
+      Examples:
+        task secret:set NAME=acme
+        task secret:set NAME=cloudflare-dns -- --target web-1 --dry-run
+
+      Runs: scripts/secret.sh set <NAME> {{"{{"}}.CLI_ARGS}}   (prompts / stdin pass through)
+    requires:
+      vars: [NAME]
+    preconditions:
+      - sh: '[ -n "{{.NAME}}" ]'
+        msg: "NAME is required: task secret:set NAME=<name>  (cloudflare-dns | acme | tailnet-authkey)"
+    cmds:
+      - scripts/secret.sh set {{.NAME}} {{.CLI_ARGS}}
+
+  secret:status:
+    desc: "Show every secret's state: published? recipients? already on each node? (read-only)"
+    summary: |
+      A read-only glance at all three managed secrets. For each it prints the role
+      and recipient group, whether the ciphertext (secrets/<name>.sops.yaml) is
+      published, the recipient hosts inferred from host_vars node_roles, and a
+      best-effort check (over incus) of whether each node already has the decrypted
+      dest file. Never mutates anything and never fails — safe to run any time.
+
+      Use it before and after secret:set to see what changed.
+
+      Runs: scripts/secret.sh status
+    cmds:
+      - scripts/secret.sh status
+
+  secret:seed:
+    desc: "FALLBACK: place a node-local secret directly; VALUE via stdin (prefer secret:set)"
+    summary: |
+      FALLBACK path — the normal one is `task secret:set NAME=<name>`. Use this only
+      for a node not yet key-registered, or an emergency: it writes the value
+      straight to the node-local file (no git, no SOPS), so a committed sops file
+      for the same dest OVERRIDES it on the next converge.
+
       Seeds (or rotates — same operation) a node-local secret file. The VALUE is
       read from STDIN only, never from arguments, so it cannot leak into shell
       history or the process table. Written 0600 under /etc/substrate/secrets/.
@@ -398,37 +455,36 @@ tasks:
       - scripts/seed-secret.sh {{.CLI_ARGS}}
 
   secret:encrypt:
-    desc: "Encrypt secrets for distribution (pending: sops landing on another branch)"
+    desc: "ADVANCED: raw sops encrypt into a sops file; VALUE via stdin (prefer secret:set)"
     summary: |
-      Placeholder for sops+age based secret distribution, which is being built on
-      a parallel branch. When scripts/secret.sh exists this task runs it; until
-      then it prints a note and points you at secret:seed for node-local seeding.
+      ADVANCED / manual escape hatch — the normal path is `task secret:set NAME=<name>`,
+      which does discovery, key registration, commit and PR for you. Use this only
+      when you have already registered recipients and just want to (re)encrypt a
+      value into secrets/<name>.sops.yaml, driving the commit + PR yourself.
 
-      Runs: scripts/secret.sh encrypt <args>  IF present, else a pending notice.
+      The VALUE is read from STDIN only (never argv). Refuses if the recipient group
+      has no registered keys.
+
+        printf '%s' "$TOKEN" | task secret:encrypt -- cloudflare-dns
+
+      Runs: scripts/secret.sh encrypt <args>  (stdin passes through).
     cmds:
-      - |
-        if [ -x scripts/secret.sh ]; then
-          scripts/secret.sh encrypt {{.CLI_ARGS}}
-        else
-          echo "pending: sops secret distribution is landing on another branch; use secret:seed meanwhile"
-        fi
+      - scripts/secret.sh encrypt {{.CLI_ARGS}}
 
   secret:rotate:
-    desc: "Rotate distributed secrets (pending: sops landing on another branch)"
+    desc: "ADVANCED: raw sops rotate (encrypt + revoke reminder); VALUE via stdin (prefer secret:set)"
     summary: |
-      Placeholder for sops+age based secret rotation, being built on a parallel
-      branch. When scripts/secret.sh exists this task runs it; until then it prints
-      a note and points you at secret:seed (re-seeding a node-local secret IS its
-      rotation).
+      ADVANCED / manual escape hatch — the normal path is `task secret:set NAME=<name>`
+      (running it again on an existing secret IS its rotation). Use this only for a
+      raw re-encrypt when you are managing the commit + PR yourself; it is `encrypt`
+      plus a reminder to REVOKE the old credential upstream (re-encrypting does not
+      invalidate the previous value).
 
-      Runs: scripts/secret.sh rotate <args>  IF present, else a pending notice.
+        printf '%s' "$NEW_TOKEN" | task secret:rotate -- cloudflare-dns
+
+      Runs: scripts/secret.sh rotate <args>  (stdin passes through).
     cmds:
-      - |
-        if [ -x scripts/secret.sh ]; then
-          scripts/secret.sh rotate {{.CLI_ARGS}}
-        else
-          echo "pending: sops secret distribution is landing on another branch; use secret:seed meanwhile"
-        fi
+      - scripts/secret.sh rotate {{.CLI_ARGS}}
 
   # --- staging: -----------------------------------------------------------
   staging:up:
@@ -698,42 +754,43 @@ tasks:
         LESSON
 
   learn:secrets:
-    desc: "Lesson: node-local secret files, the skip-loudly contract, where values live"
+    desc: "Lesson: secrets are one command (secret:set), ciphertext in git, node-held keys"
     summary: |
-      A 20-line lesson on the secret model: root-only files under
-      /etc/substrate/secrets, seeded at bootstrap, never in git; roles that need a
-      missing secret skip loudly instead of failing the converge.
+      A 20-line lesson on the secret model: publishing is one command
+      (task secret:set), values ride git only as SOPS ciphertext encrypted to
+      node-held age keys, and roles that need a missing secret skip loudly.
 
       Runs: renders the lesson to the terminal (gum-styled header if available).
     cmds:
       - |
         if command -v gum >/dev/null 2>&1; then
-          gum style --border normal --padding "0 1" --bold "Secrets — node-local files, never in git, skip loudly"
+          gum style --border normal --padding "0 1" --bold "Secrets — one command, ciphertext in git, node-held keys"
         else
-          printf '\n== Secrets — node-local files, never in git, skip loudly ==\n'
+          printf '\n== Secrets — one command, ciphertext in git, node-held keys ==\n'
         fi
         cat <<'LESSON'
 
-        Secrets are node-local files — never in git, never on your laptop.
+        A secret is ONE command. You never handle keys or ciphertext by hand.
 
-          WHERE THEY LIVE    /etc/substrate/secrets/ on each node. Directory 0700,
-                             each file 0600, root-only. Three today:
-                               tailnet-authkey     -> roles/tailnet
-                               cloudflare-dns.ini  -> roles/dns (public zone)
-                               cloudflare.ini      -> roles/cert_issuer (ACME DNS-01)
+          PUBLISH / ROTATE   task secret:set NAME=<name>
+                             It finds which nodes read the secret, registers their
+                             age keys, asks you for the VALUE at a HIDDEN prompt,
+                             encrypts it, and opens a PR. You just approve the PR;
+                             nodes decrypt it themselves on the next reconcile.
+                             Rotation is the same command with a new value.
+                             See it all with:  task secret:status
 
-          WHERE VALUES LIVE  Seeded at bootstrap from SUBSTRATE_* env vars, or
-                             placed by hand / task secret:seed. NEVER committed:
-                             grep the repo for a token and you find a PATH, not a
-                             credential.
+          HOW VALUES RIDE    Only as SOPS CIPHERTEXT in secrets/<name>.sops.yaml,
+          GIT                encrypted to the recipient nodes' age PUBLIC keys. Each
+                             node holds its OWN private key (generated at bootstrap,
+                             never leaves it) and decrypts with your laptop OFF. A
+                             workstation-held decrypt key is banned. Grep the repo
+                             for a token and you find ciphertext, never plaintext.
 
-          SKIP-LOUDLY        A role needing a missing secret does NOT fail the
-                             converge. It stats the file, emits a WARNING, and
-                             skips just the credential-consuming tasks. One missing
-                             token never wedges the fleet — the rest converges.
-
-        No SOPS / age / vault-with-a-laptop-key: any scheme that makes one
-        workstation necessary to decrypt-and-converge is excluded by design.
+          ON THE NODE        Decrypted to /etc/substrate/secrets/ (0700 dir, 0600
+                             files, root-only) — the plain file each role reads.
+                             A role needing a MISSING secret skips LOUDLY (WARNING,
+                             not failure), so one missing token never wedges a node.
 
         deeper: docs/secrets.md — open with: task docs:open FILE=secrets
         LESSON
