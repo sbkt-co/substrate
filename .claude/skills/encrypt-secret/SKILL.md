@@ -1,66 +1,81 @@
 ---
 name: encrypt-secret
-description: Encrypt or rotate a substrate secret into git with SOPS + node-held age keys (the PRIMARY secret mechanism). Use when publishing or rotating a Cloudflare DNS token, ACME token, or tailnet authkey so registered nodes decrypt it on reconcile.
+description: Publish or rotate a substrate secret with the one command `task secret:set` (SOPS + node-held age keys, the PRIMARY mechanism). Use when publishing or rotating a Cloudflare DNS token, ACME token, or tailnet authkey so recipient nodes decrypt it on reconcile.
 ---
 
-# Encrypt / rotate a secret (SOPS, node-held keys)
+# Set a secret (the one command)
 
-This is the PRIMARY way substrate handles secrets: a value is encrypted to the
-registered nodes' age PUBLIC keys, committed as `secrets/<name>.sops.yaml`, and
-each node decrypts it with its OWN private key (`/etc/substrate/secrets/age.key`,
-generated at bootstrap, never leaves the node) on the next reconcile. No
-workstation is ever required to converge the fleet — the laptop only produces
-ciphertext that git carries. See docs/secrets.md.
+Publishing or rotating a substrate secret is **one command**. It hides all the
+SOPS/age machinery: it discovers which nodes read the secret, registers their age
+PUBLIC keys, asks you for the value at a HIDDEN prompt, encrypts to
+`secrets/<name>.sops.yaml`, and opens a PR. Each node decrypts with its OWN
+private key (`/etc/substrate/secrets/age.key`, generated at bootstrap, never
+leaves the node) on the next reconcile. No workstation is ever in the decrypt
+loop. See docs/secrets.md.
 
-"A secret is one command; everything else is a commit."
+"Run one command, answer the hidden prompt, approve the PR."
 
-Prereqs: `sops` and `age` on this machine (`brew install sops age`). At least one
-node must already be REGISTERED for the secret's group — node keys are printed at
-bootstrap; register them with the add-node flow / `register-node` (see below).
+Prereq: `sops`, `age`, and `gh` on this machine (`brew install sops age gh`).
 
-Steps:
+## Primary path
 
-1. Pick the secret name (maps to a canonical file/format — do not improvise):
-   - `cloudflare-dns` -> `CLOUDFLARE_API_TOKEN=<value>`   (roles/dns)
-   - `acme`           -> `dns_cloudflare_api_token = <value>` (roles/cert_issuer)
-   - `tailnet-authkey`-> raw one-line preauth key         (roles/tailnet)
+1. Pick the name (each maps to a role + canonical node file — do not improvise):
+   - `cloudflare-dns` -> `roles/dns` -> `cloudflare-dns.ini`
+   - `acme`           -> `roles/cert_issuer` -> `cloudflare.ini`
+   - `tailnet-authkey`-> `roles/tailnet` -> `tailnet-authkey`
 
-2. Encrypt — pipe the VALUE via stdin, NEVER on the command line:
-
-   ```sh
-   printf '%s' "$TOKEN" | scripts/secret.sh encrypt cloudflare-dns
-   ```
-
-   It wraps the value byte-for-byte as `{ content: | ... }`, encrypts to the
-   group's registered recipients, and writes `secrets/cloudflare-dns.sops.yaml`.
-   It REFUSES if no node is registered for that group (a ciphertext with no
-   recipients is unreadable) and tells you to register one first.
-
-3. Rotate is the same command with rotation guidance:
+2. Run the one command and answer the hidden prompt:
 
    ```sh
-   printf '%s' "$NEW_TOKEN" | scripts/secret.sh rotate cloudflare-dns
+   task secret:set NAME=acme
+   # or directly: scripts/secret.sh set acme
    ```
 
-   After rotating, REVOKE the old credential upstream (Cloudflare token /
-   headscale preauth key) — re-encrypting does not invalidate the previous one.
+   It prints the recipients it found, registers their keys, reads the VALUE at a
+   hidden prompt (with a confirm re-entry — never echoed, never in argv), encrypts,
+   commits, pushes a `secret-set-<name>` branch, and opens a PR into `staging`.
 
-4. Commit + PR the `secrets/*.sops.yaml` change via the runbook flow (branch off
-   `staging` -> `tests/run.sh` -> PR). Nodes registered for the group pick it up
-   on their next reconcile; a manually-seeded value for the same dest is replaced.
+3. Approve/merge the PR. Recipient nodes pick the value up on their next reconcile.
 
-Registering a node key (once, from the bootstrap output):
+**Rotation is the same command** — run `task secret:set NAME=<name>` again with the
+new value, then REVOKE the old credential upstream (Cloudflare token / headscale
+preauth key); re-encrypting does not invalidate the previous one.
+
+## Flags (pass after `--` from task)
+
+- `--dry-run` — show the full plan (recipients, keys, git+gh commands), change
+  nothing. Preview with `task secret:set NAME=acme -- --dry-run`.
+- `--target <host>[,<host2>]` — name recipients directly (before a node declares
+  the role in host_vars).
+- `--key <age1...>` — supply a pubkey for a host not reachable over incus (a real
+  cloud node — paste the pubkey it printed at bootstrap).
+- `--yes` — skip the confirmation prompt (automation; or pipe the value on stdin).
+
+## See state
+
+```sh
+task secret:status
+```
+
+Read-only: per secret, whether it is published, its recipient hosts, and whether
+each node already has the decrypted file.
+
+## Notes
+
+- If no node declares the secret's role yet, `set` explains that and tells you to
+  add the role to a host_vars file (PR) or pass `--target`. It never fails
+  cryptically.
+- Only ever set REVOCABLE material (scoped/rotatable tokens, single-use preauth
+  keys): public-repo ciphertext is forever.
+- FALLBACK for a not-yet-registered node or an emergency is the **seed-secret**
+  skill (node-local file, no git). SOPS with a WORKSTATION-held key is BANNED —
+  keys are node-held only (laptop-off invariant).
+
+## Advanced / manual (only if you are scripting the pieces)
+
+`task secret:set` wraps these; reach for them only when debugging:
 
 ```sh
 scripts/secret.sh register-node <age1pubkey> --groups dns_nodes,acme_nodes
+printf '%s' "$TOKEN" | scripts/secret.sh encrypt cloudflare-dns   # then commit + PR
 ```
-
-This edits `.sops.yaml` and re-keys existing secrets. If it reports a secret
-"NOT re-keyed" (no current recipient key on this machine), just re-run `encrypt`
-for that name from its source value — that republishes it to all recipients using
-only public keys.
-
-Only ever encrypt REVOCABLE material (scoped/rotatable tokens, single-use preauth
-keys): public-repo ciphertext is forever. FALLBACK for not-yet-registered nodes or
-emergencies is the seed-secret skill (node-local file, no git). SOPS with a
-WORKSTATION-held key is BANNED — keys are node-held only (laptop-off invariant).
