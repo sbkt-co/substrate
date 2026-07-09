@@ -4,7 +4,8 @@
 # Model: the committed branch is the source of truth for secret VALUES too, but
 # only as ciphertext. Each node holds its OWN age identity (generated once at
 # bootstrap into {{ common_sops_age_key_file }}, mode 0600, never leaving the
-# node and never printed). group_vars/all.yml ships a manifest
+# node and never printed; created at bootstrap or on the first converge that
+# finds it missing). group_vars/all.yml ships a manifest
 # (substrate_sops_secrets) mapping committed `secrets/<name>.sops.yaml` files to
 # the canonical node-local dest files the roles parse. This task installs the
 # tooling and, for every manifest entry this node is a recipient of, decrypts and
@@ -28,6 +29,26 @@
     name: age
     state: present
 
+- name: Ensure the node secrets directory exists
+  ansible.builtin.file:
+    path: "{{ substrate_secrets_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Every node self-provisions its own age identity on converge (not only at
+# bootstrap), so a node that predates SOPS — or any freshly reconciling node —
+# gains a decryption key with no manual step. The private key never leaves the
+# node; `scripts/secret.sh set` derives the public key on demand (age-keygen -y).
+# The `creates:` guard makes this run exactly once. In the unprivileged CI
+# check-mode converge the command is only predicted (not executed), so no key is
+# generated there and secret distribution stays skipped, keeping CI green.
+- name: Generate the node age identity if absent
+  ansible.builtin.command:
+    cmd: "age-keygen -o {{ common_sops_age_key_file }}"
+    creates: "{{ common_sops_age_key_file }}"
+
 - name: Probe the installed sops version
   ansible.builtin.command: sops --version
   register: common_sops_installed
@@ -50,6 +71,14 @@
   ansible.builtin.stat:
     path: "{{ common_sops_age_key_file }}"
   register: common_sops_age_key
+
+- name: Enforce private mode on the node age identity
+  ansible.builtin.file:
+    path: "{{ common_sops_age_key_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: common_sops_age_key.stat.exists
 
 - name: Report SOPS secret distribution is inactive (no node age identity)
   ansible.builtin.debug:
