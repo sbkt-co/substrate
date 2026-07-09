@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# substrate — root launcher for the operations TUI (a menu over Taskfile.yml).
+# Thin shim: all logic lives in scripts/tui.sh. Run `./substrate` or `./substrate --smoke`.
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$DIR/scripts/tui.sh" "$@"

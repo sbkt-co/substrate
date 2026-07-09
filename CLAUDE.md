@@ -18,6 +18,7 @@ material may be committed.
 
 | Task | Command |
 | --- | --- |
+| Operational task registry (wraps every script below) | `task --list` — single source of truth; TUI wrapper `./substrate` |
 | Validation gate (lint + syntax + check-mode converge, containerized) | `tests/run.sh` — exactly the CI `validate` job |
 | Ad-hoc in toolchain image | `tests/run.sh ansible-lint roles/reconciler` |
 | Real converge test (idempotence + drift repair, Incus + systemd) | `tests/incus/run.sh` — the gated CI `converge` job |

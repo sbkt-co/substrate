@@ -1,0 +1,780 @@
+# Taskfile.yml — the single source of truth for substrate operations.
+#
+# Every operational workflow is a task here. Two front ends, one registry:
+#   - CLI:  `task <name>`         (e.g. `task check:validate`)
+#   - TUI:  `./substrate`         a menu that lists these tasks and only ever
+#                                 runs `task <name>` — so it can never drift
+#                                 from this file.
+#
+# Tasks WRAP the committed scripts under scripts/, tests/, and staging/ — they
+# never reimplement that logic. Every task carries a one-line `desc:` (shown in
+# `task --list`) and a longer `summary:` (shown by `task --summary <name>` and
+# in the TUI) explaining what it does, why it exists, and exactly what it runs.
+#
+# Run `task` with no arguments for a grouped cheat sheet.
+---
+version: '3'
+
+silent: true
+
+vars:
+  STAGING_PROJECT: substrate-staging
+
+tasks:
+  default:
+    desc: "Show the grouped cheat sheet (this is what `task` with no args prints)"
+    summary: |
+      Prints a grouped cheat sheet of every operational task, then points at the
+      menu UI. This runs when you type `task` with no arguments.
+
+      For the interactive menu instead, run `./substrate`. For the raw machine
+      list, run `task --list-all`. For one task's full detail, run
+      `task --summary <name>`.
+    cmds:
+      - |
+        cat <<'SHEET'
+        substrate operations — `task <name>`, or `./substrate` for the menu.
+
+          learn:   model         "you edit git; machines watch git" — the pull loop
+                   flow          boot -> bootstrap -> converge -> reconcile timeline
+                   topology      the layers: physical/tailnet/naming/TLS/control
+                   secrets       node-local files, skip-loudly, where values live
+                   staging       the two-container fleet as the integration test
+
+          setup:   host          install the host toolchain (macOS brew bundle) + doctor
+
+          toolbox: build         build the portable substrate-toolbox operator image
+                   shell         open the ./substrate menu inside that container
+
+          check:   validate      lint + syntax + check-mode converge (CI `validate`)
+                   converge      real Incus converge: idempotence + drift repair
+                   doctor        audit local tooling (found/missing + install hints)
+
+          ship:    pr            run validate, then open a PR into staging
+                   promote-dry   preview the staging -> main fast-forward (no push)
+                   promote       execute the staging -> main fast-forward push
+
+          node:    add NAME=     register a node + print its bootstrap snippet
+                   status NODE=   show a node's status.yml / node.yml / timer
+
+          role:    new NAME=     scaffold a new differentiation role under roles/
+
+          secret:  seed          place a node-local secret (value via stdin)
+                   encrypt       (pending) sops-based secret distribution
+                   rotate        (pending) sops-based secret rotation
+
+          staging: up            bring up / re-converge the local Incus fleet
+                   status        incus list + tailscale status + MagicDNS check
+                   logs NODE=     tail a node's substrate-reconcile journal
+                   shell NODE=    open a shell inside a staging node
+
+          docs:    list          list the docs/ reference set
+                   open FILE=     print a doc (FILE=runbook, architecture, ...)
+
+        Tip: `task --summary <name>` explains any task in full before you run it.
+        SHEET
+
+  # --- setup: -------------------------------------------------------------
+  setup:host:
+    desc: "Install the host toolchain (macOS: brew bundle) then audit it with check:doctor"
+    summary: |
+      One-shot setup for the PRIMARY, host-native path. On macOS it runs `brew bundle`
+      against the repo Brewfile (go-task, gum, sops, age, uv, gh, colima, incus,
+      shellcheck), then runs check:doctor so you see exactly what landed.
+
+      Why host-native is primary on macOS: the ./substrate TUI needs a real native
+      TTY, and the staging fleet talks to the Colima-hosted Incus socket — a Linux
+      container reaches neither cleanly. Use the toolbox: image only as a portable
+      fallback for lint/PR work (see task toolbox:shell).
+
+      On Linux there is no Homebrew, so this prints the apt/equivalent install hints
+      instead of installing, then still runs check:doctor. Install the listed packages
+      with your distro's package manager (or use the toolbox image).
+
+      Runs: brew bundle (macOS) | prints install hints (Linux); then task check:doctor.
+    cmds:
+      - |
+        if [ "$(uname -s)" = "Darwin" ]; then
+          if ! command -v brew >/dev/null 2>&1; then
+            echo "Homebrew is not installed. Install it from https://brew.sh then re-run: task setup:host" >&2
+            exit 1
+          fi
+          echo "Installing the host toolchain from the Brewfile (brew bundle)..."
+          brew bundle
+        else
+          echo "No Homebrew on this OS — install these with your package manager, then re-run check:doctor:"
+          echo "  go-task     https://taskfile.dev/installation/   (the task runner)"
+          echo "  gum         https://github.com/charmbracelet/gum  (Charm apt repo; optional TUI sugar)"
+          echo "  sops + age  apt install age; sops from https://github.com/getsops/sops/releases"
+          echo "  uv          https://docs.astral.sh/uv/   (installs pinned ansible-core)"
+          echo "  gh          https://cli.github.com/      (GitHub's apt repo; for ship:pr)"
+          echo "  incus       apt install incus            (models nodes for check:converge / staging:*)"
+          echo "  shellcheck  apt install shellcheck       (lints scripts/)"
+          echo "  (Docker/Colima are macOS concerns only; Linux runs Docker/Incus natively.)"
+        fi
+      - task: check:doctor
+
+  # --- toolbox: -----------------------------------------------------------
+  toolbox:build:
+    desc: "Build the portable operator image (substrate-toolbox) from toolbox/Dockerfile"
+    summary: |
+      Builds the substrate-toolbox image: Debian trixie + the pinned lint toolchain
+      (uv + tests/requirements.txt) plus go-task, gum, sops, age, gh, git and less.
+      It is the portable fallback for hosts without Homebrew and for CI-style lint/PR
+      work when the host-native path is not available.
+
+      Multi-arch safe: builds on an arm64 Mac and amd64 CI alike.
+
+      Runs: docker build -f toolbox/Dockerfile -t substrate-toolbox .
+    preconditions:
+      - sh: 'command -v docker >/dev/null 2>&1'
+        msg: "docker is required to build the toolbox image. Install it: brew install --cask docker (see task check:doctor)."
+    cmds:
+      - docker build -f toolbox/Dockerfile -t substrate-toolbox .
+
+  toolbox:shell:
+    desc: "Open the ./substrate menu inside the substrate-toolbox container (build it first)"
+    summary: |
+      Runs the substrate-toolbox image with the working tree mounted at /substrate and
+      your gh + git config mounted read-only, landing you in the ./substrate menu.
+      Build the image first with `task toolbox:build`.
+
+      WHAT WORKS inside: lint via the installed toolchain (ansible-lint / yamllint /
+      ansible-playbook --syntax-check), `task <name>` and the ./substrate TUI, sops+age
+      encryption, `gh` PRs, and git.
+
+      WHAT DOES NOT: check:validate needs the host Docker daemon; check:converge and
+      staging:* need the host's Incus. Those tasks detect the container (via the
+      SUBSTRATE_TOOLBOX=1 marker this image sets) and print a hint to run them on the
+      host instead of failing obscurely.
+
+      Override the menu with a plain shell (or any command):
+        docker run -it --rm -v "$PWD":/substrate substrate-toolbox bash
+
+      Runs: docker run -it --rm -v "$PWD":/substrate -v ~/.config/gh:/root/.config/gh:ro -v ~/.gitconfig:/root/.gitconfig:ro substrate-toolbox
+    interactive: true
+    preconditions:
+      - sh: 'command -v docker >/dev/null 2>&1'
+        msg: "docker is required to run the toolbox image. Install it: brew install --cask docker (see task check:doctor)."
+    cmds:
+      - docker run -it --rm -v "$PWD":/substrate -v ~/.config/gh:/root/.config/gh:ro -v ~/.gitconfig:/root/.gitconfig:ro substrate-toolbox
+
+  # --- check: -------------------------------------------------------------
+  check:validate:
+    desc: "Lint + syntax + check-mode converge (the CI `validate` job), containerized"
+    summary: |
+      The fast, unprivileged validation gate. Run this before every PR — it is
+      exactly what CI's `validate` job runs, so a green run here means a green
+      gate there.
+
+      What it does: builds the pinned Debian-trixie toolchain image and runs
+      ansible-lint + yamllint + `ansible-playbook --syntax-check` + a check-mode
+      converge against your current working tree (mounted, so no rebuild needed
+      for edits). No root, no real changes to any machine.
+
+      Runs: tests/run.sh
+    cmds:
+      - |
+        if [ "${SUBSTRATE_TOOLBOX:-0}" = "1" ]; then
+          echo "check:validate needs host docker (it builds the lint image) — run it on the host: task check:validate" >&2
+          exit 1
+        fi
+      - tests/run.sh {{.CLI_ARGS}}
+
+  check:converge:
+    desc: "Real Incus converge: idempotence + drift repair (the gated CI `converge` job)"
+    summary: |
+      The heavyweight test the check-mode suite cannot do: boots a real Debian
+      trixie system container (systemd as PID 1), converges it for real, asserts
+      the second converge reports changed=0, deletes managed state to prove drift
+      is repaired, and checks the reconciler timer ends up active.
+
+      Needs a working Incus. On macOS start it first with tests/incus/colima-up.sh
+      (the script auto-detects the colima-incus vs local remote). This is the CI
+      `converge` job, gated behind the `needs-converge` label.
+
+      Runs: tests/incus/run.sh
+    cmds:
+      - |
+        if [ "${SUBSTRATE_TOOLBOX:-0}" = "1" ]; then
+          echo "check:converge needs host incus (it boots a real system container) — run it on the host: task check:converge" >&2
+          exit 1
+        fi
+      - tests/incus/run.sh {{.CLI_ARGS}}
+
+  check:doctor:
+    desc: "Audit local tooling: print found/missing with install hints (never fails)"
+    summary: |
+      A friendly environment audit for the operator who is not sure what is
+      installed. It checks each tool substrate's workflows lean on and prints a
+      found/missing line with an install hint for anything absent. It exits 0
+      even with missing optional tools — it is informative, not punishing.
+
+      Required: task, git, gh, uv, ansible-playbook. Node modeling: docker
+      (lint image), incus (+ colima on macOS to host it). Optional: gum (TUI
+      sugar), sops + age (only needed once secret:encrypt lands).
+
+      Runs: an inline tool audit (no external script).
+    cmds:
+      - |
+        missing=0
+        is_macos=0; [ "$(uname -s)" = "Darwin" ] && is_macos=1
+        # check <cmd> <required|optional|macos> <hint>
+        check() {
+          cmd="$1"; kind="$2"; hint="$3"
+          if command -v "$cmd" >/dev/null 2>&1; then
+            printf '  ok       %-18s %s\n' "$cmd" "$(command -v "$cmd")"
+            return
+          fi
+          case "$kind" in
+            optional) printf '  missing  %-18s optional — %s\n' "$cmd" "$hint" ;;
+            *)        printf '  MISSING  %-18s %s\n' "$cmd" "$hint"; missing=$((missing+1)) ;;
+          esac
+        }
+        echo "substrate tooling audit ($(uname -s)):"
+        echo
+        echo "required:"
+        check task            required "brew install go-task"
+        check git             required "brew install git"
+        check gh              required "brew install gh   (GitHub CLI, for ship:pr)"
+        check uv              required "brew install uv   (Python toolchain)"
+        check ansible-playbook required "uv tool install ansible-core==2.18.6"
+        echo
+        echo "node modeling:"
+        check docker          required "brew install --cask docker   (builds the lint image for check:validate)"
+        check incus           required "brew install incus   (models nodes for check:converge / staging:*)"
+        if [ "$is_macos" = 1 ]; then
+          check colima        macos    "brew install colima  (hosts Incus on macOS; run tests/incus/colima-up.sh)"
+        fi
+        echo
+        echo "optional:"
+        check gum             optional "brew install gum  (nicer ./substrate menu; pure-bash fallback works without it)"
+        check sops            optional "brew install sops (needed only once secret:encrypt lands)"
+        check age             optional "brew install age  (paired with sops for secret:encrypt)"
+        echo
+        if [ "$missing" -eq 0 ]; then
+          echo "All required tooling present."
+        else
+          echo "$missing required tool(s) missing — install the ones marked MISSING above."
+        fi
+        exit 0
+
+  # --- ship: --------------------------------------------------------------
+  ship:pr:
+    desc: "Validate, then open a PR from the current branch into staging"
+    summary: |
+      Guided path from a feature branch to a reviewable PR. It refuses to open a
+      PR straight against a protected branch, shows you the branch you are on,
+      runs the validation gate first so you never open a red PR, then hands off
+      to `gh` to create the PR with staging as the base.
+
+      Never commit directly to staging/main — this keeps you on the PR path.
+
+      Runs: tests/run.sh, then `gh pr create --base staging`.
+    preconditions:
+      - sh: 'command -v gh >/dev/null 2>&1'
+        msg: "gh (GitHub CLI) is required. Install it: brew install gh  (see task check:doctor)."
+    cmds:
+      - |
+        branch="$(git rev-parse --abbrev-ref HEAD)"
+        if [ "$branch" = "main" ] || [ "$branch" = "staging" ]; then
+          echo "You are on '$branch'. Open PRs from a feature branch, not a protected branch." >&2
+          echo "Try: git switch -c my-change staging" >&2
+          exit 1
+        fi
+        echo "Current branch: $branch  ->  PR base: staging"
+      - echo "Running the validation gate before opening the PR..."
+      - tests/run.sh
+      - gh pr create --base staging {{.CLI_ARGS}}
+
+  ship:promote-dry:
+    desc: "Preview the staging -> main fast-forward (delta + push command, no push)"
+    summary: |
+      Shows exactly what promoting would ship — the staging..main commit delta and
+      the precise push command — without touching origin. Always run this before
+      ship:promote so you see what is about to reach production.
+
+      Promotion is fast-forward only: it aborts if main is not an ancestor of
+      staging, so the two branches can never diverge.
+
+      Runs: scripts/promote.sh --dry-run
+    cmds:
+      - scripts/promote.sh --dry-run
+
+  ship:promote:
+    desc: "Execute the staging -> main fast-forward push (deploys to production)"
+    summary: |
+      Deploys to production. Fast-forwards origin/main to origin/staging's tip, so
+      every node tracking main converges to what has been soaking on staging.
+      Refuses anything that is not a clean fast-forward and never force-pushes.
+
+      Preview first with ship:promote-dry. Merging is deploying — you never SSH in.
+
+      Runs: scripts/promote.sh --yes
+    cmds:
+      - scripts/promote.sh --yes
+
+  # --- node: --------------------------------------------------------------
+  node:add:
+    desc: "Register a node (NAME=<hostname>) + print its bootstrap snippet"
+    summary: |
+      Onboards a new fleet node. Prints the exact cloud-init / run-once-as-root
+      bootstrap snippet (with the branch seed and optional secret-seed env vars),
+      and creates host_vars/<hostname>.yml from the example so you can set its
+      node_roles and PR it via the runbook flow.
+
+      NAME is the node's reported hostname. Add flags after `--`, e.g. the target
+      environment: `task node:add NAME=web2 -- --branch main` (default staging).
+
+      Runs: scripts/add-node.sh <NAME> [flags]
+    requires:
+      vars: [NAME]
+    preconditions:
+      - sh: '[ -n "{{.NAME}}" ]'
+        msg: "NAME is required: task node:add NAME=<hostname> [-- --branch staging|main]"
+    cmds:
+      - scripts/add-node.sh {{.NAME}} {{.CLI_ARGS}}
+
+  node:status:
+    desc: "Show a node's status.yml / node.yml / reconcile timer (NODE=<name>, staging)"
+    summary: |
+      Answers "is this node reconciling, and to what?" for a staging Incus node:
+      prints /etc/substrate/status.yml (last converge result), /etc/substrate/node.yml
+      (identity + tracked_branch), and the substrate-reconcile.timer status.
+
+      NODE is the staging instance name (e.g. staging-core). For a REAL node, run
+      the same three reads over SSH instead — drop the `incus exec ... --` prefix:
+      `ssh <node> 'cat /etc/substrate/status.yml /etc/substrate/node.yml; systemctl status substrate-reconcile.timer'`.
+
+      Runs: incus exec <NODE> --project substrate-staging -- <the three reads>
+    requires:
+      vars: [NODE]
+    preconditions:
+      - sh: '[ -n "{{.NODE}}" ]'
+        msg: "NODE is required: task node:status NODE=<staging-instance>  (e.g. staging-core)"
+    cmds:
+      - |
+        incus exec "{{.NODE}}" --project "{{.STAGING_PROJECT}}" -- sh -c '
+          echo "== /etc/substrate/status.yml =="; cat /etc/substrate/status.yml 2>/dev/null || echo "(absent — node has not converged yet)"
+          echo; echo "== /etc/substrate/node.yml =="; cat /etc/substrate/node.yml 2>/dev/null || echo "(absent)"
+          echo; echo "== substrate-reconcile.timer =="; systemctl status substrate-reconcile.timer --no-pager 2>&1 || true
+        '
+
+  # --- role: --------------------------------------------------------------
+  role:new:
+    desc: "Scaffold a new differentiation role under roles/ (NAME=<role_name>)"
+    summary: |
+      Scaffolds roles/<NAME>/{defaults,tasks,handlers}/main.yml from the templates
+      in scripts/templates/role/, with the load-bearing patterns baked in (FQCN
+      modules, the `ansible_service_mgr == 'systemd'` guard, the skip-loudly secret
+      stat, quoted file modes, a guarded restart handler). Refuses to overwrite an
+      existing role.
+
+      NAME is lowercase, starts with a letter, [a-z0-9_] only.
+
+      Runs: scripts/new-role.sh <NAME>
+    requires:
+      vars: [NAME]
+    preconditions:
+      - sh: '[ -n "{{.NAME}}" ]'
+        msg: "NAME is required: task role:new NAME=<role_name>  (e.g. metrics_agent)"
+    cmds:
+      - scripts/new-role.sh {{.NAME}}
+
+  # --- secret: ------------------------------------------------------------
+  secret:seed:
+    desc: "Place a node-local secret; VALUE comes from stdin (never argv)"
+    summary: |
+      Seeds (or rotates — same operation) a node-local secret file. The VALUE is
+      read from STDIN only, never from arguments, so it cannot leak into shell
+      history or the process table. Written 0600 under /etc/substrate/secrets/.
+
+      Pass the target and secret-name after `--`, and pipe the value in:
+        printf '%s' "$TOKEN" | task secret:seed -- --incus staging-core acme
+      Targets: --incus <name> | --local.  Names: tailnet-authkey | cloudflare-dns | acme.
+
+      Runs: scripts/seed-secret.sh <args>   (stdin passes straight through)
+    cmds:
+      - scripts/seed-secret.sh {{.CLI_ARGS}}
+
+  secret:encrypt:
+    desc: "Encrypt secrets for distribution (pending: sops landing on another branch)"
+    summary: |
+      Placeholder for sops+age based secret distribution, which is being built on
+      a parallel branch. When scripts/secret.sh exists this task runs it; until
+      then it prints a note and points you at secret:seed for node-local seeding.
+
+      Runs: scripts/secret.sh encrypt <args>  IF present, else a pending notice.
+    cmds:
+      - |
+        if [ -x scripts/secret.sh ]; then
+          scripts/secret.sh encrypt {{.CLI_ARGS}}
+        else
+          echo "pending: sops secret distribution is landing on another branch; use secret:seed meanwhile"
+        fi
+
+  secret:rotate:
+    desc: "Rotate distributed secrets (pending: sops landing on another branch)"
+    summary: |
+      Placeholder for sops+age based secret rotation, being built on a parallel
+      branch. When scripts/secret.sh exists this task runs it; until then it prints
+      a note and points you at secret:seed (re-seeding a node-local secret IS its
+      rotation).
+
+      Runs: scripts/secret.sh rotate <args>  IF present, else a pending notice.
+    cmds:
+      - |
+        if [ -x scripts/secret.sh ]; then
+          scripts/secret.sh rotate {{.CLI_ARGS}}
+        else
+          echo "pending: sops secret distribution is landing on another branch; use secret:seed meanwhile"
+        fi
+
+  # --- staging: -----------------------------------------------------------
+  staging:up:
+    desc: "Bring up / re-converge the persistent local Incus staging fleet"
+    summary: |
+      Creates (or reuses) the two long-lived staging Incus containers — staging-core
+      (headscale + cert issuer) and staging-web1 (cert client) — seeds their branch
+      + secrets, and converges them in order, minting a single-use tailnet key per
+      node. Idempotent: re-run any time to re-converge. Never deletes anything.
+
+      The wrapped script auto-detects the Incus remote (colima-incus on macOS, local
+      on Linux); on macOS run tests/incus/colima-up.sh once first.
+
+      Runs: staging/up.sh
+    cmds:
+      - |
+        if [ "${SUBSTRATE_TOOLBOX:-0}" = "1" ]; then
+          echo "staging:up needs host incus — run it on the host: task staging:up" >&2
+          exit 1
+        fi
+      - staging/up.sh
+
+  staging:status:
+    desc: "Staging fleet health: incus list + tailscale status + MagicDNS check"
+    summary: |
+      One glance at the local staging fleet: the Incus instances and their state,
+      the tailnet membership as seen from staging-core, and whether MagicDNS
+      resolves a node name over the tailnet. Missing pieces are tolerated (a node
+      may not have joined yet) rather than failing the task.
+
+      Runs: incus list; incus exec staging-core -- tailscale status;
+            incus exec staging-web1 -- getent hosts staging-core.net.sbkt.co
+    cmds:
+      - |
+        if [ "${SUBSTRATE_TOOLBOX:-0}" = "1" ]; then
+          echo "staging:status needs host incus — run it on the host: task staging:status" >&2
+          exit 1
+        fi
+      - |
+        echo "== incus instances (project {{.STAGING_PROJECT}}) =="
+        incus list --project "{{.STAGING_PROJECT}}" || true
+        echo; echo "== tailscale status (from staging-core) =="
+        incus exec staging-core --project "{{.STAGING_PROJECT}}" -- tailscale status || echo "(tailnet not up on staging-core yet)"
+        echo; echo "== MagicDNS: staging-core.net.sbkt.co (from staging-web1) =="
+        incus exec staging-web1 --project "{{.STAGING_PROJECT}}" -- getent hosts staging-core.net.sbkt.co || echo "(MagicDNS not resolving yet)"
+
+  staging:logs:
+    desc: "Tail a staging node's substrate-reconcile journal (NODE=<name>)"
+    summary: |
+      Shows the last 50 lines of the substrate-reconcile.service journal on a
+      staging node — the record of its most recent converge runs. This is where
+      you look when a change is not landing or a converge failed.
+
+      NODE is the staging instance name (e.g. staging-core, staging-web1).
+
+      Runs: incus exec <NODE> --project substrate-staging -- journalctl -u substrate-reconcile.service -n 50 --no-pager
+    requires:
+      vars: [NODE]
+    preconditions:
+      - sh: '[ -n "{{.NODE}}" ]'
+        msg: "NODE is required: task staging:logs NODE=<staging-instance>  (e.g. staging-core)"
+    cmds:
+      - |
+        if [ "${SUBSTRATE_TOOLBOX:-0}" = "1" ]; then
+          echo "staging:logs needs host incus — run it on the host: task staging:logs NODE={{.NODE}}" >&2
+          exit 1
+        fi
+      - incus exec "{{.NODE}}" --project "{{.STAGING_PROJECT}}" -- journalctl -u substrate-reconcile.service -n 50 --no-pager
+
+  staging:shell:
+    desc: "Open an interactive shell inside a staging node (NODE=<name>)"
+    summary: |
+      Drops you into a root bash shell inside a staging Incus node for hands-on
+      inspection. Remember the mental model: anything you change here is drift the
+      next reconcile will undo — use it to look, not to configure.
+
+      NODE is the staging instance name (e.g. staging-core, staging-web1).
+
+      Runs: incus exec <NODE> --project substrate-staging -- bash
+    interactive: true
+    requires:
+      vars: [NODE]
+    preconditions:
+      - sh: '[ -n "{{.NODE}}" ]'
+        msg: "NODE is required: task staging:shell NODE=<staging-instance>  (e.g. staging-core)"
+    cmds:
+      - |
+        if [ "${SUBSTRATE_TOOLBOX:-0}" = "1" ]; then
+          echo "staging:shell needs host incus — run it on the host: task staging:shell NODE={{.NODE}}" >&2
+          exit 1
+        fi
+      - incus exec "{{.NODE}}" --project "{{.STAGING_PROJECT}}" -- bash
+
+  # --- docs: --------------------------------------------------------------
+  docs:list:
+    desc: "List the docs/ reference set"
+    summary: |
+      Lists the documentation you can open with docs:open, so you do not have to
+      remember the file names. Each is a focused reference: runbook (day-to-day),
+      architecture (network/TLS/topology), secrets (node-local model).
+
+      Runs: an inline listing of docs/*.md and the root guides.
+    cmds:
+      - |
+        echo "docs (open with: task docs:open FILE=<name>):"
+        for f in README CONTRIBUTING; do
+          [ -f "$f.md" ] && printf '  %-14s %s\n' "$f" "$f.md"
+        done
+        if [ -d docs ]; then
+          for f in docs/*.md; do
+            [ -f "$f" ] || continue
+            name="$(basename "$f" .md)"
+            printf '  %-14s %s\n' "$name" "$f"
+          done
+        fi
+
+  docs:open:
+    desc: "Print a doc by name (FILE=runbook, architecture, secrets, README, ...)"
+    summary: |
+      Prints a documentation file to the terminal (piped through a pager if one is
+      available). FILE is the bare name without extension: runbook, architecture,
+      secrets, README, CONTRIBUTING. Run docs:list to see what is available.
+
+      Runs: pager on docs/<FILE>.md (or <FILE>.md at the repo root).
+    requires:
+      vars: [FILE]
+    preconditions:
+      - sh: '[ -n "{{.FILE}}" ]'
+        msg: "FILE is required: task docs:open FILE=<name>  (see task docs:list)"
+    cmds:
+      - |
+        f=""
+        for cand in "docs/{{.FILE}}.md" "{{.FILE}}.md"; do
+          if [ -f "$cand" ]; then f="$cand"; break; fi
+        done
+        if [ -z "$f" ]; then
+          echo "No such doc '{{.FILE}}'. Run: task docs:list" >&2
+          exit 1
+        fi
+        if command -v less >/dev/null 2>&1; then less "$f"; else cat "$f"; fi
+
+  # --- learn: -------------------------------------------------------------
+  # Short, self-contained lessons rendered to the terminal for an operator who
+  # did not build the system. Each is <= 40 lines out, ends with a pointer to the
+  # deeper doc. They are ordinary tasks, so the ./substrate menu discovers them.
+  learn:model:
+    desc: "Lesson: you edit git; machines watch git — the pull loop and why there is no deploy"
+    summary: |
+      A 20-line lesson on substrate's core mental model: the tracked git branch is
+      the desired state, each node reconciles ITSELF against it on a timer, and
+      there is deliberately no deploy/apply/SSH step. Read this first.
+
+      Runs: renders the lesson to the terminal (gum-styled header if available).
+    cmds:
+      - |
+        if command -v gum >/dev/null 2>&1; then
+          gum style --border normal --padding "0 1" --bold "The mental model — you edit git; machines watch git"
+        else
+          printf '\n== The mental model — you edit git; machines watch git ==\n'
+        fi
+        cat <<'LESSON'
+
+        You never deploy. There is no push, no "apply", no SSH-in-and-run.
+
+          - The tracked git branch IS the desired state. main = production,
+            staging = pre-production. Whatever is committed there is the spec.
+          - Each node runs `ansible-pull` on a systemd timer: it fetches its
+            branch and converges ITSELF to match — idempotently, repairing any
+            manual drift, even when the branch has not changed.
+          - So the operator loop is only: edit files -> PR -> merge. The machines
+            watch git and reconcile on their own schedule.
+
+        Why no deploy command? It would be a second source of truth that could
+        disagree with git. There is deliberately none: if the answer to "how do I
+        change X" is not "commit a file", something is wrong.
+
+        What runs where:
+          - your laptop:  edits, `task` commands, opening PRs. Disposable.
+          - GitHub:       the control plane; the branch is authoritative.
+          - each node:    the reconciler timer -> ansible-pull -> converge.
+
+        deeper: docs/architecture.md — open with: task docs:open FILE=architecture
+        LESSON
+
+  learn:flow:
+    desc: "Lesson: a node's life — boot -> bootstrap -> converge -> reconcile"
+    summary: |
+      A 22-line timeline of how a bare server becomes a self-healing fleet member:
+      the one-time boot + bootstrap, the first converge, and the forever reconcile
+      loop. Shows what happens once versus what repeats.
+
+      Runs: renders the lesson to the terminal (gum-styled header if available).
+    cmds:
+      - |
+        if command -v gum >/dev/null 2>&1; then
+          gum style --border normal --padding "0 1" --bold "The timeline — boot -> bootstrap -> converge -> reconcile"
+        else
+          printf '\n== The timeline — boot -> bootstrap -> converge -> reconcile ==\n'
+        fi
+        cat <<'LESSON'
+
+        A node's life, from bare server to self-healing member of the fleet:
+
+          1. BOOT       A fresh server boots (cloud-init user-data, or run once
+                        as root). Nothing substrate-specific exists yet.
+
+          2. BOOTSTRAP  bootstrap/bootstrap.sh runs ONCE: installs git + ansible,
+                        writes /etc/substrate/branch (the SUBSTRATE_BRANCH seed),
+                        creates /etc/substrate/secrets (0700) and seeds secret
+                        files from env vars, then execs the first ansible-pull.
+
+          3. CONVERGE   ansible-pull checks out the tracked branch and runs
+                        local.yml: applies common + reconciler, then each role in
+                        the node's host_vars node_roles list. The node is now at
+                        its full, role-specific desired state.
+
+          4. RECONCILE  The reconciler installed substrate-reconcile.timer. It
+                        re-runs ansible-pull every interval (staging: 5 min),
+                        re-converging and repairing drift even when the branch is
+                        unchanged. Each run records /etc/substrate/status.yml.
+
+        Steps 1-2 happen once; steps 3-4 repeat forever. That loop is the whole
+        system — no step needs a human or a laptop after bootstrap.
+
+        deeper: docs/architecture.md — open with: task docs:open FILE=architecture
+        LESSON
+
+  learn:topology:
+    desc: "Lesson: the layers — physical / tailnet / naming / TLS / control"
+    summary: |
+      A 22-line miniature of substrate's layered topology: cloud/Incus hosts, the
+      headscale tailnet, MagicDNS naming, the wildcard TLS cert, and GitHub as the
+      control layer you operate. Each layer only trusts the one below it.
+
+      Runs: renders the lesson to the terminal (gum-styled header if available).
+    cmds:
+      - |
+        if command -v gum >/dev/null 2>&1; then
+          gum style --border normal --padding "0 1" --bold "The topology — five layers, bottom to top"
+        else
+          printf '\n== The topology — five layers, bottom to top ==\n'
+        fi
+        cat <<'LESSON'
+
+        substrate is built in layers; each only trusts the layer below it:
+
+          PHYSICAL  Cloud servers (any provider) + the local staging fleet as
+                    Incus system containers. Nodes are cattle: reproducible from
+                    bootstrap, never hand-configured.
+
+          TAILNET   A headscale-run WireGuard mesh. Nodes join with a single-use
+                    preauth key at bootstrap. All internal traffic rides the
+                    tailnet; nothing internal is exposed on the public internet.
+
+          NAMING    MagicDNS under net.sbkt.co gives every node a stable internal
+                    name. These names never appear in public DNS or in
+                    Certificate Transparency logs.
+
+          TLS       A wildcard *.net.sbkt.co cert, issued via DNS-01 by the
+                    cert_issuer node and pulled by cert_client nodes over the
+                    tailnet. No cert material in git.
+
+          CONTROL   GitHub. The tracked branch is the spec; nodes pull + converge.
+                    This is the layer you actually operate.
+
+        deeper: docs/architecture.md — open with: task docs:open FILE=architecture
+        LESSON
+
+  learn:secrets:
+    desc: "Lesson: node-local secret files, the skip-loudly contract, where values live"
+    summary: |
+      A 20-line lesson on the secret model: root-only files under
+      /etc/substrate/secrets, seeded at bootstrap, never in git; roles that need a
+      missing secret skip loudly instead of failing the converge.
+
+      Runs: renders the lesson to the terminal (gum-styled header if available).
+    cmds:
+      - |
+        if command -v gum >/dev/null 2>&1; then
+          gum style --border normal --padding "0 1" --bold "Secrets — node-local files, never in git, skip loudly"
+        else
+          printf '\n== Secrets — node-local files, never in git, skip loudly ==\n'
+        fi
+        cat <<'LESSON'
+
+        Secrets are node-local files — never in git, never on your laptop.
+
+          WHERE THEY LIVE    /etc/substrate/secrets/ on each node. Directory 0700,
+                             each file 0600, root-only. Three today:
+                               tailnet-authkey     -> roles/tailnet
+                               cloudflare-dns.ini  -> roles/dns (public zone)
+                               cloudflare.ini      -> roles/cert_issuer (ACME DNS-01)
+
+          WHERE VALUES LIVE  Seeded at bootstrap from SUBSTRATE_* env vars, or
+                             placed by hand / task secret:seed. NEVER committed:
+                             grep the repo for a token and you find a PATH, not a
+                             credential.
+
+          SKIP-LOUDLY        A role needing a missing secret does NOT fail the
+                             converge. It stats the file, emits a WARNING, and
+                             skips just the credential-consuming tasks. One missing
+                             token never wedges the fleet — the rest converges.
+
+        No SOPS / age / vault-with-a-laptop-key: any scheme that makes one
+        workstation necessary to decrypt-and-converge is excluded by design.
+
+        deeper: docs/secrets.md — open with: task docs:open FILE=secrets
+        LESSON
+
+  learn:staging:
+    desc: "Lesson: the two staging containers and why they are the integration test"
+    summary: |
+      A 22-line lesson on the local staging fleet: what staging-core and
+      staging-web1 are, why a real two-node Incus fleet exercises the cross-node
+      paths (tailnet, DNS-01, cert distribution) a check-mode converge cannot.
+
+      Runs: renders the lesson to the terminal (gum-styled header if available).
+    cmds:
+      - |
+        if command -v gum >/dev/null 2>&1; then
+          gum style --border normal --padding "0 1" --bold "Staging — a real two-node fleet as the integration test"
+        else
+          printf '\n== Staging — a real two-node fleet as the integration test ==\n'
+        fi
+        cat <<'LESSON'
+
+        Staging is a real, running two-node fleet — the integration test a
+        check-mode lint can never be.
+
+          THE TWO CONTAINERS (Incus, project substrate-staging):
+            staging-core   headscale (tailnet coordinator) + cert_issuer. Mints
+                           the preauth keys and issues the wildcard cert.
+            staging-web1   a cert_client: joins the tailnet, pulls the cert over
+                           it, resolves staging-core by MagicDNS.
+
+          WHY IT IS THE INTEGRATION TEST: these nodes bootstrap, join the tailnet,
+          issue and fetch TLS, and reconcile on a 5-minute timer exactly like
+          production. It exercises the cross-node paths (tailnet enrolment, DNS-01,
+          cert distribution) a single check-mode converge cannot reach.
+
+          THE WORKFLOW: merge to staging -> the fleet pulls within 5 min -> soak ->
+          promote to main (ff-only). Drive it with task staging:up (bring up /
+          re-converge), task staging:status (health), task staging:logs NODE=...
+
+        Anything you change inside a staging node by hand is drift the next
+        reconcile undoes. Use it to observe, not to configure.
+
+        deeper: docs/architecture.md — open with: task docs:open FILE=architecture
+        LESSON
