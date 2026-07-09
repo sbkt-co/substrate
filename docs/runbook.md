@@ -1,6 +1,81 @@
 # Runbook — how to actually use this
 
-The one-sentence mental model: **you edit git; the machines watch git.**
+## The launcher
+
+Run **`./substrate`** for a menu of everything below, or **`task --list`** for
+the flat list. Every workflow in this runbook is also a task name, so you never
+have to remember a command — pick it from the menu, or run `task <name>`
+(`task --summary <name>` explains any task before you run it):
+
+| Runbook step | Task |
+|---|---|
+| validate before a PR | `task check:validate` |
+| real converge test | `task check:converge` |
+| open a PR into staging | `task ship:pr` |
+| preview promotion staging→main | `task ship:promote-dry` |
+| promote staging→main | `task ship:promote` |
+| add a machine | `task node:add NAME=<hostname>` |
+| check a node (status/timer) | `task node:status NODE=<name>` |
+| seed or rotate a secret | `task secret:seed -- <target> <name>` |
+| bring up the staging fleet | `task staging:up` |
+| staging fleet health | `task staging:status` |
+| watch a node reconcile | `task staging:logs NODE=<name>` |
+| shell into a staging node | `task staging:shell NODE=<name>` |
+| scaffold a new role | `task role:new NAME=<role>` |
+| audit local tooling | `task check:doctor` |
+
+The launcher is a thin menu over the same registry (`Taskfile.yml`) — it only
+ever runs `task <name>`, so the menu and the CLI can never drift apart.
+
+New here? The **Learn** area (top of the menu) renders short, self-contained
+lessons — no reading required first:
+
+| Lesson | Task |
+|---|---|
+| you edit git; machines watch git (the pull loop) | `task learn:model` |
+| a node's life: boot → bootstrap → converge → reconcile | `task learn:flow` |
+| the layers: physical / tailnet / naming / TLS / control | `task learn:topology` |
+| node-local secrets and the skip-loudly contract | `task learn:secrets` |
+| the two staging containers as the integration test | `task learn:staging` |
+
+Each ends with a pointer to the deeper doc (open it with `task docs:open FILE=<name>`).
+
+## Reproducible setup
+
+Two ways to get a working operator environment, both reproducible from this repo.
+
+**Host-native (primary, macOS).** One command installs the whole toolchain from the
+committed `Brewfile` and audits the result:
+
+```sh
+task setup:host        # macOS: brew bundle (go-task, gum, sops, age, uv, gh,
+                       #        colima, incus, shellcheck), then check:doctor
+```
+
+This is the primary path on macOS because the `./substrate` TUI needs a real native
+TTY and the staging fleet talks to the Colima-hosted Incus socket — a container
+reaches neither cleanly. On Linux there is no Homebrew, so `setup:host` prints the
+apt/equivalent install hints and then runs `check:doctor`.
+
+**Toolbox container (portable fallback).** For a host without Homebrew, or CI-style
+lint/PR work, build and enter the pinned operator image:
+
+```sh
+task toolbox:build     # docker build -f toolbox/Dockerfile -t substrate-toolbox .
+task toolbox:shell     # mounts the tree at /substrate (+ gh/git config, read-only),
+                       # lands in the ./substrate menu
+```
+
+Inside the toolbox you **can**: lint (`ansible-lint`/`yamllint`/`--syntax-check`),
+run `task <name>` and the TUI, encrypt with `sops`+`age`, open PRs with `gh`, and use
+git. You **cannot** run `check:validate` (needs the host Docker daemon) or
+`check:converge`/`staging:*` (need the host's Incus) — those tasks detect the
+container via the `SUBSTRATE_TOOLBOX=1` marker and tell you to run them on the host.
+Override the menu with a plain shell: `docker run -it --rm -v "$PWD":/substrate substrate-toolbox bash`.
+
+## The one-sentence mental model
+
+**You edit git; the machines watch git.**
 If a "how do I configure X" question has an answer that is not "commit a
 file", something is wrong.
 

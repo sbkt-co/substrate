@@ -93,6 +93,15 @@ Prefer **systemd-native processes installed by roles** (as `headscale`, `tailnet
 
 ## Quickstart
 
+**One entry point for every operational task:** run `./substrate` for an
+interactive menu, or `task --list` for the flat list (`task <name>` to run one,
+`task check:doctor` to audit your local tooling). Every workflow below is also a
+task — see [docs/runbook.md](docs/runbook.md#the-launcher) for the name mapping.
+
+**Set up the toolchain reproducibly:** `task setup:host` installs everything from the
+committed `Brewfile` on macOS (or prints the Linux hints), then audits it; or build the
+portable `task toolbox:build` / `task toolbox:shell` container. See [docs/runbook.md](docs/runbook.md#reproducible-setup).
+
 **Bootstrap a node:**
 
 ```sh
