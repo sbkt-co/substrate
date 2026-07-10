@@ -28,7 +28,8 @@ keys:
   dns_nodes: &dns_nodes []
   # Nodes running roles/cert_issuer — recipients of secrets/acme.sops.yaml
   # (Cloudflare TXT-only ACME token).
-  acme_nodes: &acme_nodes []
+  acme_nodes: &acme_nodes
+    - age1vdmwlfsshxn07gr72cwjgvqm8838nhk3ps8muh0j34fywmxc9u2sephvjs
   # Nodes running roles/tailnet — recipients of secrets/tailnet-authkey.sops.yaml
   # (single-use headscale preauth key).
   tailnet_nodes: &tailnet_nodes []
