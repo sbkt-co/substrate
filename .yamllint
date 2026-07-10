@@ -4,6 +4,8 @@ extends: default
 ignore: |
   .git/
   *.j2
+  # SOPS-encrypted secrets are ciphertext, not hand-authored YAML to format.
+  secrets/
 
 rules:
   line-length:

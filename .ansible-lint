@@ -6,3 +6,5 @@ profile: moderate
 
 exclude_paths:
   - .git/
+  # SOPS-encrypted secrets are ciphertext, not hand-authored YAML to lint.
+  - secrets/
