@@ -65,6 +65,9 @@ tasks:
                    encrypt       advanced: raw sops encrypt (value via stdin)
                    rotate        advanced: raw sops rotate  (value via stdin)
 
+          cert:    status        trusted (real) or untrusted (test) certs? — plain words
+                   mode MODE=     switch certs: MODE=trusted | untrusted (opens a PR)
+
           staging: up            bring up / re-converge the local Incus fleet
                    status        incus list + tailscale status + MagicDNS check
                    logs NODE=     tail a node's substrate-reconcile journal
