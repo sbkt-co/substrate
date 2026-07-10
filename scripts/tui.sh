@@ -51,8 +51,8 @@ fi
 
 # --- namespaces (parallel arrays; bash 3.2 has no associative arrays) ----------
 # Order mirrors the Taskfile `default` cheat sheet so the menu and `task` agree.
-NS_KEYS=(learn setup toolbox check ship node role secret staging docs)
-NS_LABELS=(Learn Setup Toolbox Check Ship Node Role Secret Staging Docs)
+NS_KEYS=(learn setup toolbox check ship node role secret cert staging docs)
+NS_LABELS=(Learn Setup Toolbox Check Ship Node Role Secret Cert Staging Docs)
 NS_BLURBS=(
   "Understand the system — short lessons"
   "Install the host toolchain (brew bundle) and audit it"
@@ -62,6 +62,7 @@ NS_BLURBS=(
   "Onboard fleet nodes and inspect their status"
   "Scaffold new differentiation role layers"
   "Set a secret in one command (secret:set) and check status"
+  "Switch certs trusted/untrusted (real vs test) and check status"
   "Bring up and inspect the local staging fleet"
   "Open and list the reference docs"
 )
@@ -132,6 +133,7 @@ task_prompt_spec() {
     node:status)             echo "NODE|Staging instance name (e.g. staging-core)" ;;
     role:new)                echo "NAME|New role name (lowercase, [a-z0-9_], e.g. metrics_agent)" ;;
     secret:set)              echo "NAME|Secret name (cloudflare-dns | acme | tailnet-authkey)" ;;
+    cert:mode)               echo "MODE|Cert mode (trusted = real | untrusted = test)" ;;
     staging:logs)            echo "NODE|Staging instance name (e.g. staging-core)" ;;
     staging:shell)           echo "NODE|Staging instance name (e.g. staging-core)" ;;
     docs:open)               echo "FILE|Doc name to open (see docs:list, e.g. runbook)" ;;

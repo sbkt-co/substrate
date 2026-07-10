@@ -486,6 +486,48 @@ tasks:
     cmds:
       - scripts/secret.sh rotate {{.CLI_ARGS}}
 
+  # --- cert: --------------------------------------------------------------
+  cert:status:
+    desc: "Show whether the fleet issues trusted (real) or untrusted (test) certs"
+    summary: |
+      Reports the current ACME mode by reading substrate_acme_staging from
+      group_vars/all.yml and translating the confusing boolean into plain words:
+        trusted    = Let's Encrypt PRODUCTION, real browser-valid certs
+        untrusted  = Let's Encrypt STAGING, TEST_CERT (untrusted on purpose)
+      Read-only; changes nothing.
+
+      Runs: scripts/cert-mode.sh status
+    cmds:
+      - scripts/cert-mode.sh status
+
+  cert:mode:
+    desc: "Switch fleet certs to trusted or untrusted — MODE=trusted|untrusted (opens a PR)"
+    summary: |
+      Switch the whole fleet between real and test certificates in one word,
+      without touching the confusingly-inverted boolean yourself:
+        MODE=trusted    -> substrate_acme_staging: false  (real LE production certs)
+        MODE=untrusted  -> substrate_acme_staging: true   (LE staging TEST_CERT)
+
+      It edits group_vars/all.yml, commits on a branch, and opens a PR into
+      staging — nothing changes on the nodes until you merge and promote, and
+      cert_issuer reissues the wildcard on the next reconcile. A no-op if the
+      fleet is already in the requested mode.
+
+      Flags after `--`:  --dry-run (show the plan, change nothing)  --yes (skip confirm)
+      Examples:
+        task cert:status
+        task cert:mode MODE=trusted
+        task cert:mode MODE=untrusted -- --dry-run
+
+      Runs: scripts/cert-mode.sh <MODE> {{.CLI_ARGS}}
+    requires:
+      vars: [MODE]
+    preconditions:
+      - sh: '[ -n "{{.MODE}}" ]'
+        msg: "MODE is required: task cert:mode MODE=trusted   (or MODE=untrusted)"
+    cmds:
+      - scripts/cert-mode.sh {{.MODE}} {{.CLI_ARGS}}
+
   # --- staging: -----------------------------------------------------------
   staging:up:
     desc: "Bring up / re-converge the persistent local Incus staging fleet"
