@@ -5,7 +5,7 @@
 # check-mode suite cannot: the playbook converges for real, is idempotent, and
 # repairs drift, leaving the reconciler timer active.
 #
-# The node is given a REAL differentiation role set (see tests/incus/inventory.yml):
+# The node is given a REAL differentiation role set (see tests/incus/test-vars.yml):
 # it is simultaneously the tailnet coordinator (headscale, loopback), a tailnet
 # member (enrolled against its own headscale with a single-use preauth key this
 # script mints), the public-DNS manager, the wildcard cert issuer, and a cert

@@ -38,6 +38,7 @@
         - /etc/systemd/system/substrate-reconcile.service
         - /etc/systemd/system/substrate-reconcile.timer
         - /etc/systemd/system/substrate-reconcile-failure.service
+        - /usr/local/sbin/substrate-reconcile-alert
         - /etc/substrate/node.yml
 
     - name: Assert all managed base paths are present
@@ -161,6 +162,34 @@
         that:
           - verify_headscale_users.stdout | from_json | selectattr('name', 'equalto', 'substrate') | list | length == 1
         fail_msg: "headscale 'substrate' user (namespace) was not created"
+
+    - name: Stat headscale backup script and backup dir
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: verify_headscale_backup
+      loop:
+        - /usr/local/sbin/headscale-backup.sh
+        - /var/lib/headscale/backups
+
+    - name: Assert headscale backup script and dir are installed
+      ansible.builtin.assert:
+        that:
+          - verify_headscale_backup.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+        fail_msg: "Missing: {{ verify_headscale_backup.results | selectattr('stat.exists', 'equalto', false) | map(attribute='item') | list }}"
+
+    - name: Query headscale backup timer state
+      ansible.builtin.systemd:
+        name: headscale-backup.timer
+      register: verify_headscale_backup_timer
+      changed_when: false
+
+    - name: Assert headscale backup timer is active
+      ansible.builtin.assert:
+        that:
+          - verify_headscale_backup_timer.status.ActiveState == "active"
+        fail_msg: >-
+          headscale-backup.timer ActiveState is
+          {{ verify_headscale_backup_timer.status.ActiveState }}, expected active
 
     # ------------------------------------------------------------------
     # tailnet: tailscaled active + the node enrolled (BackendState Running)

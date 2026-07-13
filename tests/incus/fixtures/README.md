@@ -18,7 +18,9 @@ the ephemeral node is a registered recipient of nothing — `run.sh`:
    stats and decrypts on the target, since the incus connection makes the
    controller and target different hosts).
 
-`tests/incus/inventory.yml` overrides `substrate_sops_secrets` with a single
+`tests/incus/test-vars.yml` (loaded by `converge.yml` via `vars_files` AFTER
+`group_vars/all.yml` — play `vars_files` outrank inventory vars, so this override
+cannot live in `inventory.yml`) replaces `substrate_sops_secrets` with a single
 entry pointing at this fixture, so `roles/common` decrypts it for real. `verify.yml`
 then asserts the decrypted dest exists with mode `0600` and the expected content.
 

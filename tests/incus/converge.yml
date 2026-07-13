@@ -11,6 +11,11 @@
 
   vars_files:
     - ../../group_vars/all.yml
+    # Harness overrides (real node_roles, loopback headscale URL, test-only SOPS
+    # manifest). MUST come after all.yml: later vars_files entries override
+    # earlier ones, and play vars_files outrank inventory vars — overrides placed
+    # in inventory.yml would silently lose to group_vars/all.yml.
+    - test-vars.yml
 
   pre_tasks:
     - name: Detect node-local tracked-branch seed (written at bootstrap)
