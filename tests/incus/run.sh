@@ -223,14 +223,30 @@ incus_in exec "$CONTAINER" -- sh -c '
     set -eu
     guard=/root/.ansible/collections/ansible_collections/community/general
     if [ ! -e "$guard" ]; then
-        src="$(python3 -c "import ansible_collections.community.general as m, os; print(os.path.dirname(m.__file__))" 2>/dev/null || true)"
         mkdir -p "$(dirname "$guard")"
+        # Ask galaxy where the collection already lives (it IS installed —
+        # that is the whole bug: `install` no-ops with "Nothing to do" yet
+        # never writes the creates: path) and link that real location into
+        # the guard path. A plain re-install would no-op the same way, so
+        # the fallback must be --force, which always writes into -p.
+        src="$(ansible-galaxy collection list --format json 2>/dev/null | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for root, cols in data.items():
+    if \"community.general\" in cols:
+        print(root + \"/community/general\")
+        break
+" || true)"
         if [ -n "$src" ] && [ -d "$src" ]; then
             ln -s "$src" "$guard"
         else
-            ansible-galaxy collection install community.general -p /root/.ansible/collections
+            ansible-galaxy collection install community.general \
+                -p /root/.ansible/collections --force
         fi
     fi
+    # The workaround MUST leave the guard satisfied, or the idempotence gate
+    # below fails again on the same task; verify it now, loudly.
+    [ -e "$guard" ] || { echo "galaxy creates-guard still unsatisfied at $guard" >&2; exit 1; }
 '
 
 # Enrol this single node into its own tailnet: ensure the fleet headscale user
