@@ -1,0 +1,6 @@
+# Code owners for substrate.
+#
+# A merge to a tracked branch is unattended root on the whole fleet (every node
+# runs ansible-pull as root against it), so every path requires owner review.
+# Pair this with branch protection: "Require review from Code Owners".
+* @sbkt-co
