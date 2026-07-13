@@ -9,9 +9,10 @@ The one-paragraph model: GitHub is the control plane. Every node converges
 *itself* by running `ansible-pull` on a systemd timer against the branch it
 tracks (`main` = production, `staging` = pre-prod, promoted fast-forward only).
 A node is bootstrapped once, then differentiated into its role by the `node_roles`
-list in its `host_vars`. Internal addressing is a headscale tailnet with MagicDNS
-under `net.sbkt.co`; internal hosts never appear in public DNS or CT logs. There
-is no operator laptop in the control loop — the fleet reconciles itself from git.
+list in its `host_vars`. Internal addressing is a headscale tailnet; internal hosts
+never appear in public DNS or CT logs. There is no operator laptop in the control
+loop — the fleet reconciles itself from git. Where every name is answered — and the
+move to neutral naming served by an internal resolver — is §8.
 
 ---
 
@@ -329,6 +330,10 @@ MagicDNS     : headscale-managed net.sbkt.co. Resolves <hostname>.net.sbkt.co ->
                tailscale IP. Internal topology never appears in public DNS or CT logs.
 ```
 
+The full resolution path (where each lookup goes), the internal CoreDNS resolver,
+and the move to neutral `sbkt.co` naming are in **§8** — this block is the built
+state that §8's *Current vs target* migrates from.
+
 **TLS**
 
 ```
@@ -352,7 +357,257 @@ GitHub branches: main (production) and staging (pre-prod). Nodes pull via ansibl
 
 ---
 
-## 8. Node differentiation policy — systemd-native first
+## 8. DNS resolution — where names are answered
+
+This section captures the DNS design and, specifically, **where a given lookup
+goes**. It records a decided direction; part of it is the target the fleet is
+migrating to — see *Current vs target* at the end.
+
+### Three name spaces, three authorities
+
+| Name space | Example | Authoritative source | Resolvable where |
+|---|---|---|---|
+| Public | `www.sbkt.co` | Cloudflare (`sbkt.co` public zone, reconciled by `roles/dns`) | Public internet; visible in CT logs |
+| Internal service | `s3.sbkt.co`, `web1.sbkt.co` | **internal resolver** (CoreDNS, git-managed zone) | Only on the tailnet |
+| MagicDNS host | `web1.<tailnet-base>` | headscale (control-server data) | Only on the tailnet |
+
+Internal names carry **no transport label** — services are plain `<name>.sbkt.co`,
+not `<name>.net.sbkt.co`. The `.net.` label that encoded "this is the tailnet
+transport" is retired: it leaked transport structure into the one public artifact
+(the CT-logged wildcard) for no benefit.
+
+### The resolver path — where a lookup goes
+
+Nodes use **one resolver: CoreDNS**, reached over the tailnet. headscale points
+every node at it (see *coordination* below), so a node's stub resolver targets
+tailscale's local proxy (`100.100.100.100`); `tailscaled` answers MagicDNS host
+names itself and forwards everything else to CoreDNS, which answers internal names
+authoritatively and forwards the rest to public upstreams **over DoT**:
+
+```
+app on a node
+  -> 100.100.100.100  (tailscaled; headscale set global-resolver = CoreDNS, override_local_dns)
+       -> MagicDNS host name (<host>.<magic-base>)  -> answered locally by tailscaled
+       -> everything else                            -> CoreDNS @ <core tailnet IP>
+                                                            |
+                        internal record (s3.sbkt.co)  -> answered from the git zone (A/AAAA/CNAME/SRV/TXT)
+                        any other name (www.sbkt.co…) -> fallthrough -> forward over DoT
+                                                            to tls://1.1.1.1, tls://1.0.0.1
+```
+
+CoreDNS Corefile shape — apex split-horizon via `fallthrough`, encrypted forward:
+
+```
+sbkt.co {
+    hosts /etc/coredns/internal.zone { fallthrough }   # internal name miss -> fall through
+    forward . tls://1.1.1.1 tls://1.0.0.1 { tls_servername cloudflare-dns.com }
+}
+. {
+    forward . tls://1.1.1.1 tls://1.0.0.1 { tls_servername cloudflare-dns.com }
+}
+```
+
+Consequences, stated plainly:
+
+- **Internal names never leave the tailnet** — answered from the git zone over
+  WireGuard; no public resolver, Cloudflare, or on-path observer sees the query.
+- **Public names still resolve on-tailnet** — `fallthrough` is what lets a public
+  `sbkt.co` name pass the internal-zone block instead of NXDOMAIN'ing; CoreDNS then
+  forwards it. Without `fallthrough`, being authoritative for `sbkt.co` would make
+  CoreDNS answer NXDOMAIN for `www.sbkt.co`.
+- **The CoreDNS→upstream hop is the only public egress, and it is DoT-encrypted**, so
+  on-path observers see neither internal names nor your public lookups in cleartext.
+  All public lookups also egress behind one resolver IP, aggregating per-node query
+  metadata rather than exposing it.
+- **Off the tailnet a client never gets the internal IP** — it can't reach CoreDNS and
+  no public internal record exists; internal addressing stays a tailnet-only fact.
+- **Before the tailnet is up** (fresh boot, or the Incus-bridge bootstrap window) a
+  node uses its default resolver — the cloud provider's, or the Incus bridge's
+  `.incus` names in dev/staging (this is how `staging-web1` reaches headscale at
+  `staging-core.incus` *before* it has joined the tailnet). Once `tailscaled` enrolls,
+  headscale's DNS config repoints it at CoreDNS.
+
+**Resilience.** CoreDNS is now on the path for *every* lookup, not just internal — a
+harder singleton than a split-DNS design (where public names would still resolve if
+CoreDNS died). Mitigate by running **two CoreDNS instances**, listed as two global
+nameservers rendering the same git zone, so a node fails over; or accept the SPOF and
+lean on client-side (`systemd-resolved`) caching to ride out short blips.
+
+### Why an internal resolver, not just MagicDNS
+
+MagicDNS answers only host names (`A`/`AAAA`) from control-server data; it is not an
+authoritative zone server, so it cannot express `CNAME`, `SRV`, `TXT`, `MX`, or
+service aliases. **CoreDNS** is a single-binary systemd service (fits §9),
+authoritative for the internal zone from a **git-managed zone file**, giving the full
+record-type set while staying entirely on the tailnet. It is a fleet-singleton
+`resolver` role.
+
+### How CoreDNS coordinates with headscale
+
+There is **no live DNS link** between them — headscale runs no DNS server for CoreDNS
+to forward to. Coordination is two one-way, git-driven flows:
+
+1. **headscale → nodes (pointing them at CoreDNS).** `roles/headscale` renders the DNS
+   config block — `nameservers.global = [<core tailnet IP>]`, `override_local_dns: true`
+   — and headscale pushes it to every enrolled node. This is what makes CoreDNS the
+   fleet's resolver; it is pure headscale config in git.
+2. **headscale's node data → CoreDNS's zone (so it can answer host records).** CoreDNS
+   needs node→tailnet-IP to serve `web1.sbkt.co`; headscale owns those assignments. Two
+   supported ways to get them into the zone:
+   - **Generated (recommended):** co-locate CoreDNS on the headscale (core) node; the
+     `resolver` role runs `headscale nodes list -o json` locally at converge and
+     templates `/etc/coredns/internal.zone`, reloading CoreDNS on change. The zone
+     tracks membership automatically on the reconcile timer.
+   - **Static:** pin each node's stable tailnet IP in the git zone file (recorded at
+     `add-node` time). Fully declarative, no runtime coupling; headscale IPs are stable
+     per node, so the pin holds until a node is deleted/re-registered.
+
+Because CoreDNS *consumes* headscale's data (rather than headscale calling CoreDNS),
+**co-locating the two singletons on the core node is the natural layout** — the
+generator has local CLI/DB access, and the core's tailnet IP (baked into every node's
+resolver config) is one stable value to pin. Service aliases and rich records
+(CNAME/SRV/TXT that MagicDNS can't express) are hand-added to the same git zone; host
+`A`-records come from the generator or MagicDNS. A second CoreDNS for resilience
+renders the same zone from the same data.
+
+### Privacy — what an outside observer can and cannot see
+
+- **Cloudflare** holds only public `sbkt.co` records; the internal zone is never
+  published there, so internal names cannot be enumerated from public DNS.
+- **CT logs** show only the neutral wildcard `*.sbkt.co`. Internal hosts are covered
+  by that wildcard, so **no per-host certificate is ever issued** and individual
+  internal names never enter CT. The apex wildcard base is semantically empty — it
+  discloses nothing about transport or internal structure.
+- **DNS does not expose the label at all.** A wildcard match creates no per-name
+  record; only a connection-terminating endpoint learns the name — caddy via the TLS
+  **SNI** (cleartext in the ClientHello) and the HTTP **Host** header. `sshd` never
+  learns it (SSH carries no hostname; the server sees only source IP + username).
+  The one residual leak is a client resolving an internal name **off the tailnet**
+  (e.g. browser DoH bypassing the tailnet resolver) — contained by keeping internal
+  names to on-tailnet use and disabling DoH on managed devices.
+
+### TLS key placement — the actual security control
+
+The wildcard's privacy is a property of the *name*; its security is a property of
+*where the private key lives*. Wildcard **scope** (apex `*.sbkt.co` vs. a scoped
+`*.x.sbkt.co`) does not change how hard the key is to steal, and co-located keys
+fall together — so scoping is not itself a control. The control is **minimizing
+where the key is deployed**: the public-trusted wildcard key belongs on the
+**public edge (caddy) only**. Internal service-to-service traffic already rides
+WireGuard (encrypted and mutually authenticated), so internal nodes do not need the
+public wildcard at all — where they terminate TLS internally, a self-signed or
+future internal-CA leaf suffices. This retires the old serve/fetch fan-out of the
+wildcard key to every `cert_client` node, which was the only thing that made
+wildcard scope matter for blast radius.
+
+### Current vs target
+
+- **Built today:** headscale MagicDNS under `net.sbkt.co`; wildcard `*.net.sbkt.co`
+  issued by `cert_issuer` and fetched by `cert_client` nodes over the tailnet
+  (§7 TLS). Internal names are `<host>.net.sbkt.co`.
+- **Target (this design):** neutral naming under `sbkt.co` (no `.net.` label); a new
+  `resolver` singleton role running CoreDNS, authoritative for the git-managed
+  internal zone and reached via headscale split-DNS for full record types; wildcard
+  `*.sbkt.co`; the wildcard key confined to the public edge. Migration is a rename of
+  the tailnet base domain, the new `resolver` role, and reissuing the wildcard at the
+  apex; the `host_vars` references to `*.net.sbkt.co` names move to the neutral zone
+  in the same change.
+
+---
+
+## 9. Identity and access — planes, not a spine
+
+The design that survived the adversarial review. **The tailnet is the internal trust
+boundary.** An earlier draft made a CA (`step-ca`) the "spine"; it is now **deferred**,
+because it re-solved problems the tailnet already solves and its two concrete day-one
+jobs did not hold up (below). Like §8, this records a decided direction — none of this
+plane is built yet.
+
+### The two planes
+
+**Internal plane — services talking to services (machines).**
+
+- **Identity + encryption: the tailnet (WireGuard).** A packet from `100.64.x` provably
+  came from a headscale-enrolled node, and the traffic is already encrypted and mutually
+  authenticated. No app-layer mTLS is stacked on top.
+- **Authorization: headscale ACLs** (huJSON policy in git) + a handful of **git-declared
+  service uid/gids**.
+- **S3 (versitygw): native access keys** (SigV4), delivered as node-local secrets via the
+  existing SOPS/age pipeline; per-account quotas on versitygw. A certificate is *not* an
+  S3 principal — S3 has no cert-auth path — so identity at most bootstraps/rotates the key.
+- **NFS: host-based exports** over the tailnet + git-declared service uids. This is
+  per-*host* trust (a root process on a client host can assume any local service uid), not
+  per-service enforcement — named honestly; per-service would require Kerberos.
+
+**Public plane — humans and inbound webhooks (off-tailnet).**
+
+- **caddy** is the sole public front door: TLS termination + routing + per-route auth.
+- **Authelia** (file backend + SQLite) is the OIDC provider for human web SSO, 2FA
+  enforced. It is the **only** publicly-exposed identity component.
+- **Public SSH apps** (ping.sh-style) **own their identity** on the client pubkey; no CA
+  — forcing a CA-issued cert there would kill the zero-setup `ssh host` product.
+
+### Three authorization modes at the caddy edge
+
+| Mode | Who | Mechanism |
+|---|---|---|
+| OIDC | humans → web apps | Authelia |
+| Capability / HMAC | inbound webhooks (smee.io-style) | per-source HMAC over body+timestamp, replay window; secret node-local |
+| mTLS / SPIFFE | internal service-to-service | **not used at the edge** — internal traffic rides the tailnet, never caddy |
+
+The webhook mode's real work (per-channel secret provisioning, SSE streaming through
+caddy, channel-ownership authz, capability revocation) lives in the app, not in an
+"auth mode."
+
+### Operator access
+
+Operator shell is **Tailscale SSH** brokered by headscale ACLs (identity = tailnet node
+owner), plus a **non-CA break-glass key** so cert/tailnet trouble can never lock the sole
+operator out of the box they need to fix.
+
+### What's deferred, and the trigger to revisit
+
+- **step-ca** — no day-one job once SSH → Tailscale SSH, S3 → native keys, and internal
+  mTLS → redundant on WireGuard. Revisit only for (a) mutually-distrusting workloads
+  co-located on one host, or (b) authenticated service mTLS *off* the tailnet. If it
+  returns: keep it **tailnet-only** (never public), **offline root + short intermediate**,
+  and pre-stage the next root in a trust bundle so rotation is a pull-model overlap, not a
+  flag day.
+- **LLDAP** — deferred until a human directory / self-service genuinely arrives. Authelia's
+  file backend covers a provisioned user set; self-registration is the one thing it can't
+  config into, and LLDAP-behind-Authelia is the non-destructive next rung (services trust
+  OIDC, not a product, so the IdP stays swappable).
+
+### Cross-cutting rules (non-negotiable, from the security + ops review)
+
+1. **Never commit — even SOPS-encrypted — anything not cleanly revocable:** password
+   hashes, any signing key, S3 secret keys, HMAC secrets. Node-local `0600`, like the
+   existing secret model. Git holds the *spec* (ACL policy, principal→host maps, public
+   certs, service uids), never these values. See [secrets.md](secrets.md).
+2. **Stateful singletons need a restore story pull-converge can't provide.** headscale's DB
+   (tailnet membership) and Authelia's WebAuthn/TOTP registrations are runtime state — not
+   in git, not reconstructible from it. Back them up age-encrypted to S3 (versitygw),
+   **restore-if-empty / never-reinit**, and prove the dead-singleton restore in the Incus
+   staging harness (today's core-first `up.sh` can't exercise it — that gap is the test to
+   add).
+3. **Route every new failure signal through the mechanisms already built** — `OnFailure` +
+   `/etc/substrate/status.yml` — so 3am triage stays one `cat status.yml` (add
+   `clock_synced`, `tailnet_up`, `oidc_backend_reachable`, `last_backup`, …). Keep
+   dependency ordering **skip-loudly**, never converge-failing.
+
+### Current vs target
+
+- **Built today:** none of this plane exists — the fleet has the tailnet, cert
+  distribution, and the reconcile loop only.
+- **Target (this design):** headscale ACLs as internal authz; versitygw with native keys;
+  host-based NFS; caddy public edge; Authelia OIDC (public, 2FA); Tailscale SSH +
+  break-glass for operators; step-ca and LLDAP deferred. Build order is a separate decision
+  (caddy-first is the recommended first slice — it unblocks serving anything without
+  committing to Authelia or S3).
+
+---
+
+## 10. Node differentiation policy — systemd-native first
 
 **Stance.** Prefer **systemd-native processes installed by roles**. Single-binary
 services (headscale, tailscaled, a versitygw-style daemon) fit this cleanly: the
