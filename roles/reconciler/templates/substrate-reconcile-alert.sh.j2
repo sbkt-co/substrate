@@ -1,0 +1,62 @@
+#!/bin/sh
+# Managed by substrate (roles/reconciler). Do not edit by hand.
+#
+# Fired by substrate-reconcile-failure.service (systemd OnFailure=) when a
+# converge fails. It POSTs a short failure report to a node-local webhook so a
+# stalled or drifting node surfaces without anyone watching journals.
+#
+# Contract (mirrors the node-local secret model in docs/secrets.md):
+#   - The webhook URL lives in a root-only file seeded out of band, never in git
+#     (see scripts/seed-secret.sh). If it is ABSENT we skip LOUDLY to the journal
+#     and exit 0 — a node with no webhook configured is a valid state, not a
+#     failure, and must not turn the failure handler itself into a failure.
+#   - Alerting must NEVER cascade: every step that talks to the outside world is
+#     guarded so a webhook outage cannot wedge the node. We always exit 0.
+#
+# POSIX sh (Debian's /bin/sh is dash) — no bashisms.
+set -u
+
+WEBHOOK_FILE="{{ reconciler_alert_webhook_file }}"
+STATUS_FILE="{{ reconciler_status_file }}"
+
+# Skip loudly when no webhook is configured. This is the expected state on nodes
+# that opt out of alerting; log a clear line and succeed.
+if [ ! -r "$WEBHOOK_FILE" ]; then
+    echo "substrate-reconcile-alert: no webhook configured at $WEBHOOK_FILE — skipping alert (this is not an error)."
+    exit 0
+fi
+
+# The file is a single line: the destination URL (e.g. an ntfy.sh topic URL or
+# any generic webhook). Trim whitespace/newlines defensively.
+WEBHOOK_URL="$(tr -d '[:space:]' < "$WEBHOOK_FILE")"
+if [ -z "$WEBHOOK_URL" ]; then
+    echo "substrate-reconcile-alert: webhook file $WEBHOOK_FILE is empty — skipping alert (this is not an error)."
+    exit 0
+fi
+
+HOSTNAME="$(hostname)"
+TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Best-effort context: the tail of the reconciler journal and the last recorded
+# status. Both are guarded so a missing journal or status file never aborts us.
+JOURNAL_TAIL="$(journalctl -u substrate-reconcile.service -n 20 --no-pager 2>/dev/null || echo '(journal unavailable)')"
+if [ -r "$STATUS_FILE" ]; then
+    STATUS_BODY="$(cat "$STATUS_FILE" 2>/dev/null || echo '(status.yml unreadable)')"
+else
+    STATUS_BODY="(status.yml absent — node has not recorded a converge yet)"
+fi
+
+BODY="$(printf 'substrate reconcile FAILED\nhost: %s\ntime: %s\n\n== status.yml ==\n%s\n\n== journalctl -u substrate-reconcile.service -n 20 ==\n%s\n' \
+    "$HOSTNAME" "$TIMESTAMP" "$STATUS_BODY" "$JOURNAL_TAIL")"
+
+# POST the report. --fail so an HTTP error is a curl error; --max-time bounds a
+# hung endpoint; --silent/--show-error keeps the journal clean but shows real
+# errors. The whole call is guarded: an alerting failure is logged as a WARNING
+# and swallowed so it never cascades back into the reconciler.
+if printf '%s' "$BODY" | curl --max-time 15 -fsS -X POST --data-binary @- "$WEBHOOK_URL" >/dev/null 2>&1; then
+    echo "substrate-reconcile-alert: posted failure alert for $HOSTNAME to the configured webhook."
+else
+    echo "substrate-reconcile-alert: WARNING — failed to POST failure alert to the configured webhook (endpoint down or unreachable). Continuing; the node is unaffected." >&2
+fi
+
+exit 0
