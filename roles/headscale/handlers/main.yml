@@ -6,3 +6,8 @@
     name: "{{ headscale_service_name }}"
     state: restarted
   when: ansible_service_mgr == 'systemd'
+
+- name: Reload systemd for headscale backup
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: ansible_service_mgr == 'systemd'

@@ -39,3 +39,12 @@ headscale_global_nameservers:
 
 # The headscale user (namespace) fleet nodes enrol into.
 headscale_user: substrate
+
+# Backup settings. The backup script snapshots db.sqlite and noise_private.key
+# into headscale_backup_dir, retaining the last headscale_backup_retain copies.
+# Pull snapshots off the node over the tailnet (scp/rsync); S3 push is planned.
+headscale_backup_dir: /var/lib/headscale/backups
+headscale_backup_script: /usr/local/sbin/headscale-backup.sh
+headscale_backup_retain: 7
+headscale_backup_on_calendar: daily
+headscale_backup_randomized_delay_sec: 300

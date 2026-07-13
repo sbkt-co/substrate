@@ -1,0 +1,29 @@
+{{ ansible_managed | comment }}
+# Snapshot headscale state (SQLite DB + noise private key) into the backup
+# directory, then prune old snapshots. Called by headscale-backup.service.
+set -euo pipefail
+
+BACKUP_DIR="{{ headscale_backup_dir }}"
+DB_PATH="{{ headscale_data_dir }}/db.sqlite"
+NOISE_KEY_PATH="{{ headscale_data_dir }}/noise_private.key"
+RETAIN="{{ headscale_backup_retain }}"
+
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+SNAP_DIR="${BACKUP_DIR}/${TS}"
+
+mkdir -m 0700 "${SNAP_DIR}"
+
+# Online backup via the SQLite backup API — safe against a running headscale.
+sqlite3 "${DB_PATH}" ".backup '${SNAP_DIR}/db.sqlite'"
+chmod 0600 "${SNAP_DIR}/db.sqlite"
+
+# Noise private key is a plain file; copy it with restricted permissions.
+install -m 0600 "${NOISE_KEY_PATH}" "${SNAP_DIR}/noise_private.key"
+
+# Prune: keep the most recent $RETAIN snapshots; remove everything older.
+find "${BACKUP_DIR}" -mindepth 1 -maxdepth 1 -type d | \
+  sort | \
+  head -n "-${RETAIN}" | \
+  xargs --no-run-if-empty rm -rf
+
+printf 'headscale-backup: snapshot %s complete (retain=%s)\n' "${TS}" "${RETAIN}"

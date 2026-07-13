@@ -267,7 +267,9 @@ chmod 0600 /etc/substrate/secrets/cloudflare-dns.ini
 
 To rotate a NODE age key (rare — key compromise): re-bootstrap or regenerate
 `age.key` on the node, register the new public key, `encrypt`/re-key the secrets it
-needs, and remove the old key from `.sops.yaml`.
+needs, and remove the old key from `.sops.yaml`. For the full step-by-step
+procedure including consequences and re-seeding node-local secrets, see
+[runbook.md — Node age-key loss](runbook.md#node-age-key-loss).
 
 There is no fleet-wide rotation primitive yet; rotate node-by-node.
 

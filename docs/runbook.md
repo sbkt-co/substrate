@@ -168,6 +168,187 @@ incus exec staging-web1 --project substrate-staging -- getent hosts staging-core
 (On a real node, drop the `incus exec ... --` prefix and run the same
 commands over SSH.)
 
+## Backup and disaster recovery
+
+### What state is irreplaceable
+
+Git is the control plane. Everything defined there reconverges automatically on
+a new or repaired node. The only irreplaceable runtime state is:
+
+| Item | Location on node | Why it cannot be regenerated |
+|------|-----------------|------------------------------|
+| headscale `db.sqlite` | `/var/lib/headscale/db.sqlite` | Contains all enrolled peer node keys, ACLs, preauth keys, and user records. Losing it means peers must re-enrol. |
+| headscale `noise_private.key` | `/var/lib/headscale/noise_private.key` | The Noise protocol keypair for the control channel. Replacing it disconnects every enrolled client until they reconnect to the new key. |
+| each node's age private key | `/etc/substrate/age.key` | The node's secret-decryption root of trust for SOPS. Loss means the node can no longer decrypt any committed secret. |
+
+Everything else (configuration files, TLS certs, installed packages, systemd
+units) is in git and reconverges on the next `ansible-pull`. Seeded node-local
+secrets under `/etc/substrate/secrets/` are lost with the node and must be
+re-seeded (see *Node age-key loss* below).
+
+### Automated local snapshots
+
+`roles/headscale` installs a systemd timer (`headscale-backup.timer`, default:
+daily) that runs `/usr/local/sbin/headscale-backup.sh`. Each run creates a
+timestamped snapshot directory under `/var/lib/headscale/backups/` containing
+`db.sqlite` and `noise_private.key` (both mode `0600`, directory mode `0700`).
+The script retains the last `headscale_backup_retain` snapshots (default 7)
+and removes older ones.
+
+Check timer status and review recent runs:
+
+```sh
+# on the core node
+systemctl status headscale-backup.timer
+journalctl -u headscale-backup.service -n 20
+ls -lt /var/lib/headscale/backups/
+```
+
+### Pulling backups off the core node
+
+Snapshots live only on the node until you pull them. Do this regularly (at
+minimum weekly; daily before any risky change). Pull over the tailnet with scp
+or rsync — the tailnet address or MagicDNS name works from any enrolled peer:
+
+```sh
+# pull all snapshots to a local archive directory
+rsync -avz --rsync-path='sudo rsync' \
+  root@core.net.sbkt.co:/var/lib/headscale/backups/ \
+  ~/substrate-backups/headscale/
+
+# or pull a single snapshot by name
+scp -r root@core.net.sbkt.co:/var/lib/headscale/backups/20260101T020000Z \
+  ~/substrate-backups/headscale/
+```
+
+S3 push automation (to the versitygw bucket) is planned but not yet built. Until
+then, operator-pulled copies are the off-node record. Keep at least one copy that
+post-dates every enrolled peer (so the DB contains all active node keys).
+
+### Core-node replacement procedure
+
+Use this when the core node is lost or must be replaced with a fresh server.
+
+1. **Bootstrap the new node** with `bootstrap.sh` as in workflow 2, giving it the
+   `core` role in `host_vars`. Do NOT start headscale yet — the first converge
+   will install and enable it, so stop it immediately after:
+
+   ```sh
+   # on the new node, after first ansible-pull completes
+   systemctl stop headscale
+   ```
+
+2. **Restore `db.sqlite` and `noise_private.key`** from the most recent snapshot
+   before headscale starts:
+
+   ```sh
+   # from the operator workstation, push the snapshot
+   scp ~/substrate-backups/headscale/20260101T020000Z/db.sqlite \
+     root@<new-node>:/var/lib/headscale/db.sqlite
+   scp ~/substrate-backups/headscale/20260101T020000Z/noise_private.key \
+     root@<new-node>:/var/lib/headscale/noise_private.key
+
+   # fix ownership and permissions on the new node
+   chown root:root /var/lib/headscale/db.sqlite /var/lib/headscale/noise_private.key
+   chmod 0600 /var/lib/headscale/db.sqlite /var/lib/headscale/noise_private.key
+   ```
+
+3. **Start headscale** and verify it comes up cleanly:
+
+   ```sh
+   systemctl start headscale
+   systemctl status headscale
+   journalctl -u headscale -n 30
+   ```
+
+4. **Enrolled peers reconnect automatically** — their node keys are in the
+   restored DB and the restored noise key is the same one they enrolled with, so
+   clients re-establish the control channel without re-enrolment. Peers tracking
+   `OnUnitInactiveSec` timers reconnect within their next poll interval (usually
+   minutes).
+
+5. **Re-register the new node's age key.** The new node generated a fresh age key
+   at bootstrap (`/etc/substrate/age.key`). Register its public key so it can
+   receive SOPS-encrypted secrets:
+
+   ```sh
+   # read the new node's public key (on the node, or via incus exec)
+   cat /etc/substrate/age.key | grep -A1 'public key' || \
+     age-keygen -y /etc/substrate/age.key
+
+   # register it and re-encrypt all secrets it needs to receive
+   scripts/secret.sh register-node <age1pubkey> --groups dns_nodes,tailnet_nodes,...
+   # then re-encrypt each affected secret with the new recipient set:
+   task secret:set NAME=<name>
+   ```
+
+   Until this step completes, the new core node cannot decrypt any committed
+   SOPS secret; roles that need them will skip loudly (expected behaviour — not
+   a fleet-stopping failure).
+
+### Node age-key loss
+
+**Consequence:** the node can no longer decrypt any SOPS secret it was a
+recipient of. Roles that consume those secrets will skip loudly on every
+converge until the secret is re-delivered. The node is otherwise healthy — git
+reconverges everything else normally.
+
+**Recovery:**
+
+1. The node regenerates an age key at bootstrap, or you can generate one in
+   place:
+
+   ```sh
+   age-keygen -o /etc/substrate/age.key
+   chmod 0600 /etc/substrate/age.key
+   ```
+
+2. Register the new public key and re-encrypt all secrets the node needs:
+
+   ```sh
+   # on the operator workstation
+   scripts/secret.sh register-node <age1pubkey> --groups <group1>[,<group2>]
+   task secret:set NAME=<secret-name>   # repeat for each secret
+   ```
+
+   The full command reference and group names are in
+   [secrets.md](secrets.md) (see *Under the hood*).
+
+3. Force an immediate reconcile so the node picks up the re-encrypted values:
+
+   ```sh
+   systemctl start substrate-reconcile.service
+   ```
+
+4. Seeded node-local secrets under `/etc/substrate/secrets/` (bootstrap env vars
+   or hand-seeded values that were never committed as SOPS ciphertext) are lost
+   with the old key and must be re-seeded:
+
+   ```sh
+   task secret:seed -- <target> <secret-name>
+   ```
+
+### Break-glass: when the tailnet itself is down
+
+If headscale is unreachable or the tailnet is fully down, enrolled peers lose
+their overlay connectivity. Access is then limited to whatever the cloud
+provider offers:
+
+- **Provider console / serial console** — available even without network, use it
+  to log in and diagnose headscale.
+- **Provider SSH (public network)** — if the node has a public IP and SSH open
+  on the host network, that path remains available independent of tailscale.
+- **Local node reconcile** — `systemctl start substrate-reconcile.service` forces
+  a converge from git without needing tailnet connectivity (ansible-pull uses
+  HTTPS to GitHub).
+
+Current limitation: there is no automated alerting when headscale goes down. The
+timer at `headscale-backup.timer` will fail silently if headscale has not yet
+started. Monitor via `systemctl status headscale` and journal logs. A monitoring
+story is a known gap.
+
+---
+
 ## Cheat sheet
 
 | I want to… | Do |
