@@ -24,15 +24,30 @@ covers the same model in public-facing terms.
    short-lived feature branch.
 2. **CI must pass.** The `validate` job (lint + syntax + check-mode converge)
    runs on every PR and push and must be green. The `converge` job (real Incus
-   convergence + idempotence) is expensive and therefore **gated** — it does
-   *not* run on ordinary PRs. It runs automatically on pushes to `main`/`staging`
-   that touch reconciler-relevant paths (`roles/`, `local.yml`, `ansible.cfg`,
-   `group_vars/`, `host_vars/`, `bootstrap/`, `requirements.yml`, `tests/incus/`,
-   `staging/`, the CI workflow), on manual `workflow_dispatch`, and on PRs carrying
-   the `needs-converge` label. **If your PR touches any of those paths, add the
-   `needs-converge` label** so real convergence is exercised before merge; a
-   docs-only or unrelated PR can skip it. Configure branch protection to require
-   `validate` (and `converge` where you rely on the label gate).
+   convergence + idempotence) is expensive and therefore **gated**, but on PRs it
+   is now **auto-triggered by the diff**: a cheap `changes` job runs a path
+   filter, and if your PR touches any reconciler-relevant path (`roles/`,
+   `local.yml`, `ansible.cfg`, `group_vars/`, `host_vars/`, `bootstrap/`,
+   `requirements.yml`, `tests/incus/`, `staging/`, the CI workflow) the `converge`
+   job **is required to run** — you no longer need a label for it. A docs-only or
+   otherwise unrelated PR skips converge automatically.
+
+   The `needs-converge` label is now only a **manual override**: use it to force
+   converge on a PR the path filter would not catch. `converge` also runs on
+   pushes to `main`/`staging` that touch those paths and on manual
+   `workflow_dispatch`. See "Branch protection (required settings)" below for the
+   status checks to require.
+
+   > **Self-hosted runner trust.** The `converge` job runs on a **self-hosted**
+   > Incus runner and executes the PR's checked-out code as part of the test.
+   > Because the path filter now auto-triggers converge, a PR touching reconciler
+   > paths runs on that host **by default, without a label**. That is safe for
+   > trusted contributors but is a live risk for fork / outside-collaborator PRs.
+   > The repository **must** be configured to *"Require approval for all outside
+   > collaborators"* (Settings → Actions → General → Fork pull request workflows)
+   > so untrusted PRs cannot run self-hosted jobs without a maintainer clicking
+   > approve. This is a **maintainer responsibility** — it cannot be enforced by
+   > the workflow file alone.
 3. **Promote by fast-forward only.** Changes flow
    `feature → PR → staging → main`:
 
@@ -91,8 +106,58 @@ add one:
 5. **Add a verify step.** Extend `tests/incus/converge.yml` / `verify.yml` (the
    real-convergence harness) to assert the role's units/files land and are
    active, mirroring how the reconciler is verified.
-6. **Label the PR `needs-converge`** — adding a role touches `roles/`, so real
-   convergence should run before merge.
+6. **Converge runs automatically** — adding a role touches `roles/`, so the path
+   filter triggers the `converge` job on your PR (no label needed). Only reach for
+   the `needs-converge` label if you need to force it on a PR the filter misses.
+
+## Branch protection (required settings)
+
+Both `main` and `staging` must be protected. These settings could not be applied
+automatically (the CI/contributor token lacks repo-admin), so a **maintainer with
+admin** must apply them. Run the following once per branch (they are idempotent):
+
+```sh
+for b in main staging; do
+  gh api -X PUT "repos/sbkt-co/substrate/branches/$b/protection" --input - <<'JSON'
+{
+  "required_status_checks": {
+    "strict": true,
+    "checks": [
+      { "context": "validate" },
+      { "context": "changes" }
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "require_code_owner_reviews": true,
+    "required_approving_review_count": 1
+  },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_linear_history": true
+}
+JSON
+done
+```
+
+Notes:
+
+- **Required checks are `validate` and `changes` only, not `converge`.** The
+  `converge` job is *conditionally skipped* on docs-only PRs (the path filter
+  produces no reason to run it). A skipped job never reports the context, so
+  requiring `converge` as a status check would **deadlock every docs-only PR**
+  (it would wait forever for a check that never runs). Requiring `changes`
+  instead guarantees the path filter itself always executes; when the filter
+  says converge is needed, `converge` runs and — being a `needs: changes`
+  dependant that GitHub surfaces as a required-by-dependency check on the merge —
+  must pass. `required_linear_history` enforces the `--ff-only` promotion rule.
+- **`require_code_owner_reviews` pairs with [`.github/CODEOWNERS`](CODEOWNERS)**
+  (`* @sbkt-co`), so every PR needs owner approval — appropriate given a merge is
+  unattended root on the whole fleet.
+- Also enable, in **Settings → Actions → General → Fork pull request workflows**,
+  *"Require approval for all outside collaborators"* — see the self-hosted runner
+  trust note above. This is not expressible via the branch-protection API.
 
 ## Conventions
 
