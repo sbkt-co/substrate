@@ -1,0 +1,11 @@
+# Managed by substrate (roles/headscale). Do not edit by hand.
+[Unit]
+Description=Schedule daily headscale state snapshots
+
+[Timer]
+OnCalendar={{ headscale_backup_on_calendar }}
+RandomizedDelaySec={{ headscale_backup_randomized_delay_sec }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -78,3 +78,59 @@
     - >-
       headscale_users.stdout | default('[]') | from_json
       | selectattr('name', 'equalto', headscale_user) | list | length == 0
+
+# --- Backup timer -----------------------------------------------------------
+# Snapshots db.sqlite (via the SQLite online backup API) and noise_private.key
+# into headscale_backup_dir on a systemd timer (default: daily). Snapshots are
+# operator-pulled over the tailnet; S3 push automation is planned.
+
+- name: Ensure sqlite3 CLI is present (required by the backup script)
+  ansible.builtin.apt:
+    name: sqlite3
+    state: present
+
+- name: Ensure headscale backup directory exists
+  ansible.builtin.file:
+    path: "{{ headscale_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install headscale backup script
+  ansible.builtin.template:
+    src: headscale-backup.sh.j2
+    dest: "{{ headscale_backup_script }}"
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install headscale backup service unit
+  ansible.builtin.template:
+    src: headscale-backup.service.j2
+    dest: /etc/systemd/system/headscale-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for headscale backup
+  when: ansible_service_mgr == 'systemd'
+
+- name: Install headscale backup timer unit
+  ansible.builtin.template:
+    src: headscale-backup.timer.j2
+    dest: /etc/systemd/system/headscale-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for headscale backup
+  when: ansible_service_mgr == 'systemd'
+
+- name: Flush handlers so the timer sees the latest unit definitions
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start headscale backup timer
+  ansible.builtin.systemd:
+    name: headscale-backup.timer
+    enabled: true
+    state: started
+  when: ansible_service_mgr == 'systemd'
