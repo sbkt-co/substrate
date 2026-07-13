@@ -1,0 +1,11 @@
+# Managed by substrate (roles/headscale). Do not edit by hand.
+[Unit]
+Description=Headscale state snapshot (db + noise key)
+After=headscale.service
+Requires=headscale.service
+
+[Service]
+Type=oneshot
+ExecStart={{ headscale_backup_script }}
+# The script must run as root to read the noise key and write 0600 snapshots.
+User=root

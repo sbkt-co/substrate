@@ -6,11 +6,26 @@ name: ci
 #               toolchain image; same thing developers run via tests/run.sh).
 #               Runs on every PR and push — it is cheap.
 #   converge  — real convergence in an Incus system container (systemd as PID 1).
-#               It is expensive, so it is GATED: it runs only on pushes to
-#               main/staging that touch reconciler-relevant paths, on manual
-#               dispatch, or on a PR labelled `needs-converge`. It runs on a
-#               SELF-HOSTED runner (the Incus host) to avoid burning hosted
-#               minutes; the Install Incus step self-skips off github-hosted.
+#               It is expensive, so it is GATED: it runs on pushes to main/staging
+#               that touch reconciler-relevant paths, on manual dispatch, and on
+#               any PR whose diff touches those paths (the `changes` filter below).
+#               The `needs-converge` label is a manual override that forces it on
+#               PRs the filter would not catch. It runs on a SELF-HOSTED runner
+#               (the Incus host) to avoid burning hosted minutes; the Install Incus
+#               step self-skips off github-hosted.
+#
+#               SECURITY: the self-hosted Incus runner executes PR-checked-out
+#               code. Because the path filter now auto-triggers converge (no label
+#               needed), a PR that touches reconciler paths runs on that host by
+#               default. Fork / outside-collaborator PRs must therefore NOT be
+#               allowed to run self-hosted jobs without maintainer approval —
+#               enforce "Require approval for all outside collaborators" in the
+#               repo Actions settings. See CONTRIBUTING.md ("Self-hosted runner
+#               trust"). This is a maintainer responsibility, not enforceable in
+#               this workflow alone.
+#
+# Every action is pinned to a full commit SHA (supply-chain hardening); the
+# trailing comment records the human-readable version it resolved to.
 on:
   push:
     branches: [main, staging]
@@ -26,16 +41,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       # Layer cache keyed (by buildx) on the Dockerfile + pinned requirements, so
       # the apt + uv-install layers are reused until those inputs change. Safe:
       # the toolchain versions are pinned, so a cache hit is byte-identical.
       - name: Build validation image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: tests/Dockerfile
@@ -58,9 +73,9 @@ jobs:
       converge: ${{ steps.filter.outputs.converge }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Detect reconciler-relevant changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3.0.3
         id: filter
         with:
           filters: |
@@ -80,12 +95,17 @@ jobs:
     needs: changes
     # Run only when it is worth the cost:
     #   - manual dispatch (always), or
-    #   - a PR explicitly labelled `needs-converge` (always), or
+    #   - a PR whose diff touched reconciler-relevant paths (the `changes`
+    #     filter) — REQUIRED, the label is no longer needed to trigger it, or
+    #   - a PR carrying the `needs-converge` label — a manual override to force
+    #     converge on a PR the path filter would not catch, or
     #   - a push to main/staging that touched reconciler-relevant paths.
+    # A PR touching roles/** can no longer merge with converge silently skipped.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'needs-converge')) ||
+        (needs.changes.outputs.converge == 'true' ||
+         contains(github.event.pull_request.labels.*.name, 'needs-converge'))) ||
       (github.event_name == 'push' && needs.changes.outputs.converge == 'true')
     # The Incus host. On a self-hosted runner Incus is already installed; the
     # Install Incus step below self-skips off github-hosted, so flipping this
@@ -93,7 +113,7 @@ jobs:
     runs-on: [self-hosted, linux, incus]
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # Only needed on github-hosted runners, which have no Incus and whose
       # Docker install sets the iptables FORWARD policy to DROP (blocking the
@@ -122,7 +142,7 @@ jobs:
           sudo usermod -aG incus-admin "$USER"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v8.2.0
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           version: "0.8.22"
           enable-cache: true
@@ -130,7 +150,7 @@ jobs:
       # Galaxy collections are version-pinned in requirements.yml, so key the
       # cache on its hash — a bump invalidates, a hit is a fast no-op install.
       - name: Cache Ansible collections
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ~/.ansible/collections
           key: galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
@@ -147,7 +167,7 @@ jobs:
       # self-hosted runner the image persists in Incus and is reused directly.
       # Bump the key suffix to force a rebuild (e.g. for base-image updates).
       - name: Cache prebaked node image
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /tmp/incus-image
           key: incus-node-trixie-py3-v1
