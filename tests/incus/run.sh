@@ -171,11 +171,30 @@ incus_in exec "$CONTAINER" -- sh -c '
     mkdir -p "'"$FIXTURE_DIR_IN_CONTAINER"'"
     # Encrypt a dummy {content: <value>} mapping to the throwaway public key. The
     # decrypt task reads .content from --output-type json, so the plaintext must
-    # be a mapping under the key `content`.
-    plain="$(mktemp)"
+    # be a mapping under the key `content` and the store type must be YAML.
+    # BOTH store types are pinned explicitly: sops otherwise infers the input
+    # type from the file extension, and an extensionless mktemp file silently
+    # becomes a BINARY store — the plaintext then round-trips under a `data` key
+    # and the role fails on the missing `content` (censored by no_log). Exactly
+    # that bit CI once; do not "simplify" the explicit types away.
+    plain="$(mktemp --suffix=.yaml)"
     printf "content: %s\n" "'"$SECRET_PLAINTEXT"'" > "$plain"
-    sops --encrypt --age "$pub" "$plain" > "'"$FIXTURE_IN_CONTAINER"'"
+    sops --encrypt --input-type yaml --output-type yaml --age "$pub" "$plain" \
+        > "'"$FIXTURE_IN_CONTAINER"'"
     rm -f "$plain"
+    # Self-check BEFORE converge: decrypt the fixture exactly the way
+    # roles/common will (same binary, same key file, same output type) and
+    # assert the `content` key round-trips. A store-type or recipient mistake
+    # fails HERE with a readable error instead of inside a no_log-censored task.
+    SOPS_AGE_KEY_FILE="'"$AGE_KEY_FILE"'" \
+        sops --decrypt --output-type json "'"$FIXTURE_IN_CONTAINER"'" \
+        | python3 -c "
+import json, sys
+got = json.load(sys.stdin).get(\"content\")
+want = \"'"$SECRET_PLAINTEXT"'\"
+assert got == want, f\"fixture round-trip mismatch: {got!r} != {want!r}\"
+"
+    echo "SOPS fixture self-check passed (content key round-trips)."
 '
 
 converge() { ansible-playbook -i "$INVENTORY" tests/incus/converge.yml "$@"; }
