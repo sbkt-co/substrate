@@ -35,6 +35,18 @@
     mode: "0644"
   notify: Reload systemd
 
+# Alerting script the failure-handler unit runs. Installed before the unit so
+# its ExecStart target always exists. It reads a node-local webhook secret and
+# POSTs a failure report, skipping loudly when no webhook is configured — so this
+# is a plain file install with no systemd dependency.
+- name: Install reconciler failure-alert script
+  ansible.builtin.template:
+    src: substrate-reconcile-alert.sh.j2
+    dest: "{{ reconciler_alert_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+
 # OnFailure extension point. Installed like the other units but never enabled or
 # started — systemd activates it automatically when the reconciler fails.
 - name: Install reconciler failure-handler unit

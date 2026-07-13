@@ -16,6 +16,7 @@ have to remember a command — pick it from the menu, or run `task <name>`
 | promote staging→main | `task ship:promote` |
 | add a machine | `task node:add NAME=<hostname>` |
 | check a node (status/timer) | `task node:status NODE=<name>` |
+| sweep the whole fleet's status | `task fleet:status` |
 | seed or rotate a secret | `task secret:seed -- <target> <name>` |
 | bring up the staging fleet | `task staging:up` |
 | staging fleet health | `task staging:status` |
@@ -149,6 +150,77 @@ incus exec staging-core --project substrate-staging -- sh -c \
 The next reconcile picks it up (cert issuance runs against the Let's
 Encrypt STAGING endpoint until `substrate_acme_staging: false` in
 `group_vars/all.yml` — flip it via workflow 1 once certs look right).
+
+## Alerting and fleet status
+
+Two observability surfaces answer "is the fleet healthy?" without you SSHing in
+to watch journals: a **push alert** when a node's converge fails, and a
+**pull sweep** you run on demand.
+
+### Failure alerts (push)
+
+Every reconcile that fails triggers `substrate-reconcile-failure.service` (wired
+via `OnFailure=` on the reconciler). It runs `substrate-reconcile-alert`, which
+POSTs a short report — hostname, timestamp, the tail of the
+`substrate-reconcile.service` journal, and the node's `status.yml` — to a
+node-local webhook.
+
+The webhook URL is a node-local secret at `/etc/substrate/secrets/alert-webhook`
+(a single line: the URL — e.g. an ntfy.sh topic URL, or any generic webhook).
+It follows the standard secret convention (root-only, `0600`, never in git) and
+is seeded out of band like any other node-local secret:
+
+```sh
+# On a real node (drop the incus prefix; write the file directly, umask 077):
+printf '%s' 'https://ntfy.sh/my-substrate-alerts' \
+  > /etc/substrate/secrets/alert-webhook && chmod 0600 /etc/substrate/secrets/alert-webhook
+
+# On a staging Incus node, via the seed-secret path (value via stdin only):
+printf '%s' 'https://ntfy.sh/my-substrate-alerts' | \
+  incus exec staging-core --project substrate-staging -- sh -c \
+    'umask 077; cat > /etc/substrate/secrets/alert-webhook'
+```
+
+**Skip-loudly, never-fail:** if the webhook file is absent (or empty), the alert
+script logs a clear line to the journal and exits 0 — a node that opts out of
+alerting is a valid state, not an error. If the webhook is configured but the
+POST fails (endpoint down), it logs a WARNING and still exits 0: an alerting
+failure must never cascade back into the node. Opting out is simply not seeding
+the file.
+
+### Fleet status (pull)
+
+```sh
+task fleet:status        # scripts/fleet-status.sh
+```
+
+Sweeps **every** node in the roster (`host_vars/<hostname>.yml`, one file per
+node — `*.example.yml` templates are skipped) over a plain `ssh <host>`; the
+fleet is tailnet-reachable by hostname via MagicDNS, so no address inventory is
+needed. For each node it prints `/etc/substrate/status.yml` and the
+`substrate-reconcile.timer` state. It only reads — it changes nothing. An
+unreachable node prints a clear `unreachable` line and the sweep continues; one
+dead node never aborts the loop. Tune ssh via `SSH_OPTS`, e.g.
+`SSH_OPTS='-o ConnectTimeout=2 -l root' task fleet:status`.
+
+**A healthy node** shows a recent `status.yml` with `result: success`, a matching
+`last_run`/`exit_status: 0`, and its timer `active`:
+
+```
+=== web-1 ===
+-- /etc/substrate/status.yml --
+last_run: 2026-07-13T09:12:04Z
+result: success
+exit_status: 0
+-- substrate-reconcile.timer --
+active
+```
+
+**A failing node** shows a non-`success` result (or a stale `last_run`), and —
+if you seeded a webhook — you already got a push alert for it. `unreachable`
+means ssh could not connect (node down, not on the tailnet, or no access), which
+is itself a signal worth chasing. Drill into the offender with
+`task node:status NODE=<name>` (staging) or `ssh <node> journalctl -u substrate-reconcile.service -n 50`.
 
 ## When something seems wrong
 

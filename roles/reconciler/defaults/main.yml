@@ -19,3 +19,11 @@ reconciler_timeout_start_sec: "10min"
 # Fleet-observability status file the service writes after every converge.
 # Written by systemd at runtime (ExecStopPost) — never templated by Ansible.
 reconciler_status_file: /etc/substrate/status.yml
+
+# Failure alerting. On a failed converge, substrate-reconcile-failure.service
+# runs this script, which POSTs a report to the webhook URL held in the file
+# below. The URL is a node-local secret (0600, seeded out of band via
+# scripts/seed-secret.sh) and never lives in git; the script skips loudly when
+# it is absent, so this is a safe no-op on nodes that opt out of alerting.
+reconciler_alert_script: /usr/local/sbin/substrate-reconcile-alert
+reconciler_alert_webhook_file: /etc/substrate/secrets/alert-webhook

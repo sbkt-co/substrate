@@ -5,7 +5,13 @@ Documentation={{ substrate_repo_url }}
 
 [Service]
 Type=oneshot
-# Extension point: substrate-reconcile.service triggers this via OnFailure=.
-# Currently a no-op; wire alerting (push notification, log shipper, etc.) here.
+# substrate-reconcile.service triggers this via OnFailure= when a converge fails.
 # systemd activates it on failure — it must NOT be enabled or started directly.
-ExecStart=/bin/true
+#
+# The alert script reads a node-local webhook URL and POSTs a failure report; it
+# skips loudly (and still exits 0) when no webhook is configured, so a node that
+# opts out of alerting does not turn the failure handler itself into a failure.
+# The leading '-' tells systemd to tolerate a non-zero exit anyway, so even a
+# misbehaving alerter can never leave this unit failed and mask the original
+# converge failure.
+ExecStart=-{{ reconciler_alert_script }}

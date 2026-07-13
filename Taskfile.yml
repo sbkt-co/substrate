@@ -57,6 +57,8 @@ tasks:
           node:    add NAME=     register a node + print its bootstrap snippet
                    status NODE=   show a node's status.yml / node.yml / timer
 
+          fleet:   status        sweep every node over ssh: status.yml + timer
+
           role:    new NAME=     scaffold a new differentiation role under roles/
 
           secret:  set NAME=     THE one command: prompt (hidden) + PR a secret
@@ -364,6 +366,29 @@ tasks:
           echo; echo "== /etc/substrate/node.yml =="; cat /etc/substrate/node.yml 2>/dev/null || echo "(absent)"
           echo; echo "== substrate-reconcile.timer =="; systemctl status substrate-reconcile.timer --no-pager 2>&1 || true
         '
+
+  # --- fleet: -------------------------------------------------------------
+  fleet:status:
+    desc: "Sweep every fleet node over ssh: print each node's status.yml + reconcile timer"
+    summary: |
+      Fleet-wide observability in one command. Where node:status inspects ONE
+      staging Incus instance, this sweeps EVERY real node in the roster and prints,
+      for each, its /etc/substrate/status.yml (the last converge result the
+      reconciler recorded) and its substrate-reconcile.timer state.
+
+      The roster is host_vars/<hostname>.yml (one file per node; *.example.yml
+      templates are skipped) — the tracked inventory is just localhost because
+      ansible-pull converges each node against itself. Transport is a plain
+      `ssh <host>`: the fleet is tailnet-reachable by hostname (MagicDNS), so no
+      inventory of addresses is needed. It only READS — it changes nothing.
+
+      Degrades per node: an unreachable node prints a clear "unreachable" line and
+      the sweep continues. Override ssh behaviour with SSH_OPTS, e.g.
+      `SSH_OPTS='-o ConnectTimeout=2 -l root' task fleet:status`.
+
+      Runs: scripts/fleet-status.sh
+    cmds:
+      - scripts/fleet-status.sh
 
   # --- role: --------------------------------------------------------------
   role:new:
