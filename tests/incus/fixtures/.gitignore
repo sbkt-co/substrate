@@ -1,0 +1,5 @@
+# The SOPS test ciphertext (test-secret.sops.yaml) is GENERATED AT TEST TIME by
+# tests/incus/run.sh, encrypted to a throwaway age key created inside the
+# container, and never committed. Ignore any locally-generated fixture so a
+# stray artifact can never land in git. See README.md in this directory.
+*.sops.yaml

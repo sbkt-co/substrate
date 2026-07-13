@@ -1,0 +1,66 @@
+---
+# Harness overrides for the Incus converge test. Loaded by converge.yml via
+# vars_files AFTER ../../group_vars/all.yml — later vars_files entries in the
+# same play override earlier ones, which is what lets these values beat the
+# fleet defaults. (Putting them in inventory group vars does NOT work: play
+# vars_files outranks inventory vars, so group_vars/all.yml would silently win —
+# that is exactly the bug that left node_roles empty on the first CI run.)
+
+# ----------------------------------------------------------------------
+# Give the converge test node a REAL role set (not the empty fleet default).
+# The base layers (common + reconciler) always run; these add the
+# differentiation layers. This models a single-node fleet where the one
+# container is simultaneously the tailnet coordinator, a tailnet member, the
+# public-DNS manager, the wildcard cert issuer, and a cert client.
+#
+# What actually converges vs. what takes its documented skip-loudly path in a
+# network-isolated CI container with NO operator secrets (verify.yml asserts
+# both halves):
+#   headscale    — installs + runs for real (binds loopback, self-contained),
+#                  including its backup timer.
+#   tailnet      — installs the client + tailscaled; ENROLS for real against
+#                  the loopback headscale using a single-use preauth key that
+#                  run.sh mints and seeds (single-node coordinator+client).
+#   dns          — runs, finds no Cloudflare token, SKIPS the reconcile loudly
+#                  (CI must never hold a Cloudflare secret). No records touched.
+#   cert_issuer  — runs, finds no Cloudflare ini, SKIPS ACME issuance loudly;
+#                  still installs its unit/wrapper (no live DNS-01 in CI).
+#   cert_client  — runs with no issuer host pinned, SKIPS the fetch loudly.
+# ----------------------------------------------------------------------
+node_roles:
+  - headscale
+  - tailnet
+  - dns
+  - cert_issuer
+  - cert_client
+
+# Single-node tailnet: the coordinator headscale binds loopback (the role
+# default), and this same node joins it as a client over loopback. run.sh mints
+# the single-use preauth key from the local headscale and seeds it.
+substrate_headscale_url: "http://127.0.0.1:8080"
+
+# cert_client has no issuer host on purpose: there is no separate issuer node in
+# a single-node harness, so the fetch must take its loud-skip path. Left empty
+# (the role default) so verify.yml can assert that skip.
+cert_client_issuer_host: ""
+
+# ----------------------------------------------------------------------
+# Positively exercise the SOPS decrypt path (roles/common/tasks/sops.yml ->
+# sops_decrypt.yml), which is otherwise dead in CI (the node is a recipient of
+# nothing). We REPLACE the fleet manifest with a single TEST-ONLY entry whose
+# ciphertext is generated at test time by run.sh, encrypted to a throwaway age
+# key that run.sh drops at {{ common_sops_age_key_file }}. The committed
+# group_vars manifest points at repo-root secrets/ paths that do not exist under
+# this playbook's dir, so overriding it here loses no coverage — those entries
+# only ever skip in this harness anyway.
+#
+# NOTE ON PATH RESOLUTION: sops_decrypt.yml resolves the ciphertext as
+# {{ playbook_dir }}/{{ src }} and both stats and decrypts it ON THE TARGET (the
+# container), because the incus connection makes controller != target. run.sh
+# therefore mirrors this playbook's dir + the fixture INSIDE the container so
+# the real role code finds it. The plaintext is a dummy value; nothing here
+# protects anything real.
+substrate_sops_secrets:
+  - src: "fixtures/test-secret.sops.yaml"
+    dest: "{{ substrate_secrets_dir }}/test-secret"
+    mode: "0600"

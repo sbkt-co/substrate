@@ -16,3 +16,9 @@ all:
       ansible_incus_project: "{{ lookup('env', 'SUBSTRATE_INCUS_PROJECT') | default('substrate-test', true) }}"
       ansible_incus_host: substrate-test
       ansible_python_interpreter: /usr/bin/python3
+# NOTE: harness variable overrides (node_roles, headscale URL, test-only SOPS
+# manifest) live in tests/incus/test-vars.yml, loaded by converge.yml via
+# vars_files AFTER group_vars/all.yml. Do NOT put them here as inventory vars:
+# play vars_files outrank inventory vars, so group_vars/all.yml would silently
+# override them (node_roles stayed [] on the first CI run for exactly that
+# reason).

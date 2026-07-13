@@ -1,12 +1,35 @@
 ---
-# Asserts the reconciler is genuinely live on the node — the part a check-mode
-# run can never prove: the systemd units exist and the timer is actually active.
-- name: Verify reconciler is live
+# Asserts the fully differentiated node — the parts a check-mode run can never
+# prove: services are genuinely running, units exist on disk, the node enrolled
+# into its own tailnet, the node-held-key SOPS decrypt wrote a real file, and the
+# secret-bearing roles took their documented skip-loudly paths (ran, warned, made
+# no partial writes) because CI holds no operator secrets.
+#
+# Runs over the same incus connection as converge.yml. Names/paths mirror the
+# roles under roles/*; keep them in lockstep when a role's artifacts change.
+- name: Verify the fully differentiated substrate node
   hosts: all
   become: true
   gather_facts: false
 
+  vars:
+    # Kept in lockstep with tests/incus/run.sh (seeded plaintext + dest) and
+    # roles/common/defaults/main.yml (age identity path).
+    verify_sops_dest: /etc/substrate/secrets/test-secret
+    verify_sops_plaintext: substrate-sops-selftest-value
+    verify_age_key_file: /etc/substrate/secrets/age.key
+    verify_expected_branch: staging
+    verify_expected_roles:
+      - headscale
+      - tailnet
+      - dns
+      - cert_issuer
+      - cert_client
+
   tasks:
+    # ------------------------------------------------------------------
+    # Base: reconciler units + node identity file
+    # ------------------------------------------------------------------
     - name: Stat reconciler unit files and node identity
       ansible.builtin.stat:
         path: "{{ item }}"
@@ -14,9 +37,11 @@
       loop:
         - /etc/systemd/system/substrate-reconcile.service
         - /etc/systemd/system/substrate-reconcile.timer
+        - /etc/systemd/system/substrate-reconcile-failure.service
+        - /usr/local/sbin/substrate-reconcile-alert
         - /etc/substrate/node.yml
 
-    - name: Assert all managed paths are present
+    - name: Assert all managed base paths are present
       ansible.builtin.assert:
         that:
           - substrate_paths.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
@@ -33,3 +58,251 @@
         that:
           - substrate_timer.status.ActiveState == "active"
         fail_msg: "timer ActiveState is {{ substrate_timer.status.ActiveState }}, expected active"
+
+    # ------------------------------------------------------------------
+    # node.yml content: seeded branch + the full applied role set
+    # ------------------------------------------------------------------
+    - name: Read node identity file
+      ansible.builtin.slurp:
+        src: /etc/substrate/node.yml
+      register: verify_node_yml
+
+    - name: Parse node identity
+      ansible.builtin.set_fact:
+        verify_node: "{{ verify_node_yml.content | b64decode | from_yaml }}"
+
+    - name: Assert node.yml records the seeded branch and full role set
+      ansible.builtin.assert:
+        that:
+          - verify_node.tracked_branch == verify_expected_branch
+          - verify_node.roles | sort == verify_expected_roles | sort
+        fail_msg: >-
+          node.yml mismatch: branch={{ verify_node.tracked_branch | default('?') }}
+          (want {{ verify_expected_branch }}), roles={{ verify_node.roles | default([]) }}
+          (want {{ verify_expected_roles }})
+
+    # ------------------------------------------------------------------
+    # Secret dir + node age identity modes (root-only)
+    # ------------------------------------------------------------------
+    - name: Stat the secrets directory and the node age identity
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: verify_secret_paths
+      loop:
+        - /etc/substrate/secrets
+        - "{{ verify_age_key_file }}"
+
+    - name: Assert secrets dir is 0700 and the age identity is 0600
+      ansible.builtin.assert:
+        that:
+          - (verify_secret_paths.results[0].stat.exists) and (verify_secret_paths.results[0].stat.mode == '0700')
+          - (verify_secret_paths.results[1].stat.exists) and (verify_secret_paths.results[1].stat.mode == '0600')
+        fail_msg: >-
+          secrets dir mode={{ verify_secret_paths.results[0].stat.mode | default('absent') }} (want 0700),
+          age.key mode={{ verify_secret_paths.results[1].stat.mode | default('absent') }} (want 0600)
+
+    # ------------------------------------------------------------------
+    # SOPS decrypt (POSITIVE): roles/common wrote the decrypted dummy secret
+    # at mode 0600 with exactly the seeded plaintext.
+    # ------------------------------------------------------------------
+    - name: Stat the decrypted test secret
+      ansible.builtin.stat:
+        path: "{{ verify_sops_dest }}"
+      register: verify_sops_stat
+
+    - name: Read the decrypted test secret
+      ansible.builtin.slurp:
+        src: "{{ verify_sops_dest }}"
+      register: verify_sops_content
+      when: verify_sops_stat.stat.exists
+
+    - name: Assert the SOPS decrypt path wrote the secret (0600, expected content)
+      ansible.builtin.assert:
+        that:
+          - verify_sops_stat.stat.exists
+          - verify_sops_stat.stat.mode == '0600'
+          - (verify_sops_content.content | b64decode | trim) == verify_sops_plaintext
+        fail_msg: >-
+          SOPS decrypt did not produce {{ verify_sops_dest }} with mode 0600 and the
+          expected plaintext (node-held-key decrypt path did not run for real).
+
+    # ------------------------------------------------------------------
+    # headscale: config + unit present, service active, fleet user exists
+    # ------------------------------------------------------------------
+    - name: Stat headscale config
+      ansible.builtin.stat:
+        path: /etc/headscale/config.yaml
+      register: verify_headscale_cfg
+
+    - name: Assert headscale config was rendered
+      ansible.builtin.assert:
+        that:
+          - verify_headscale_cfg.stat.exists
+        fail_msg: "headscale config.yaml is missing"
+
+    - name: Query headscale service state
+      ansible.builtin.systemd:
+        name: headscale
+      register: verify_headscale_svc
+      changed_when: false
+
+    - name: Assert headscale service is active
+      ansible.builtin.assert:
+        that:
+          - verify_headscale_svc.status.ActiveState == "active"
+        fail_msg: "headscale ActiveState is {{ verify_headscale_svc.status.ActiveState }}, expected active"
+
+    - name: List headscale users
+      ansible.builtin.command: headscale users list --output json
+      register: verify_headscale_users
+      changed_when: false
+
+    - name: Assert the fleet headscale user exists
+      ansible.builtin.assert:
+        that:
+          - verify_headscale_users.stdout | from_json | selectattr('name', 'equalto', 'substrate') | list | length == 1
+        fail_msg: "headscale 'substrate' user (namespace) was not created"
+
+    - name: Stat headscale backup script and backup dir
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: verify_headscale_backup
+      loop:
+        - /usr/local/sbin/headscale-backup.sh
+        - /var/lib/headscale/backups
+
+    - name: Assert headscale backup script and dir are installed
+      ansible.builtin.assert:
+        that:
+          - verify_headscale_backup.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+        fail_msg: "Missing: {{ verify_headscale_backup.results | selectattr('stat.exists', 'equalto', false) | map(attribute='item') | list }}"
+
+    - name: Query headscale backup timer state
+      ansible.builtin.systemd:
+        name: headscale-backup.timer
+      register: verify_headscale_backup_timer
+      changed_when: false
+
+    - name: Assert headscale backup timer is active
+      ansible.builtin.assert:
+        that:
+          - verify_headscale_backup_timer.status.ActiveState == "active"
+        fail_msg: >-
+          headscale-backup.timer ActiveState is
+          {{ verify_headscale_backup_timer.status.ActiveState }}, expected active
+
+    # ------------------------------------------------------------------
+    # tailnet: tailscaled active + the node enrolled (BackendState Running)
+    # ------------------------------------------------------------------
+    - name: Query tailscaled service state
+      ansible.builtin.systemd:
+        name: tailscaled
+      register: verify_tailscaled
+      changed_when: false
+
+    - name: Assert tailscaled is active
+      ansible.builtin.assert:
+        that:
+          - verify_tailscaled.status.ActiveState == "active"
+        fail_msg: "tailscaled ActiveState is {{ verify_tailscaled.status.ActiveState }}, expected active"
+
+    - name: Probe tailnet backend state
+      ansible.builtin.command: tailscale status --json
+      register: verify_tailnet_status
+      changed_when: false
+      failed_when: false
+
+    - name: Assert the node enrolled into its own tailnet
+      ansible.builtin.assert:
+        that:
+          - verify_tailnet_status.stdout | length > 0
+          - (verify_tailnet_status.stdout | from_json).BackendState == 'Running'
+        fail_msg: >-
+          tailnet BackendState is
+          {{ (verify_tailnet_status.stdout | default('{}') | from_json).BackendState | default('n/a') }},
+          expected Running (single-use preauth enrolment did not take).
+
+    # ------------------------------------------------------------------
+    # cert_issuer: units/wrapper installed, but ACME issuance SKIPPED (no
+    # Cloudflare ini in CI) — so NO live cert and NO servable material exist.
+    # ------------------------------------------------------------------
+    - name: Stat cert_issuer artifacts and secret/skip markers
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: verify_cert_issuer
+      loop:
+        - /etc/systemd/system/substrate-certs.service      # 0: installed unconditionally
+        - /usr/local/bin/substrate-certs-serve.sh          # 1: installed unconditionally
+        - /var/lib/substrate/certs                         # 2: serve dir (created unconditionally)
+        - /etc/substrate/secrets/cloudflare.ini            # 3: MUST be absent (no secret in CI)
+        - /var/lib/substrate/certs/fullchain.pem           # 4: MUST be absent (issuance skipped)
+
+    - name: Assert cert_issuer installed its units but skipped issuance (no partial writes)
+      ansible.builtin.assert:
+        that:
+          - verify_cert_issuer.results[0].stat.exists   # unit present
+          - verify_cert_issuer.results[1].stat.exists   # wrapper present
+          - verify_cert_issuer.results[2].stat.exists   # serve dir present
+          - not verify_cert_issuer.results[3].stat.exists   # no Cloudflare ini
+          - not verify_cert_issuer.results[4].stat.exists   # no published cert
+        fail_msg: >-
+          cert_issuer skip-loudly contract violated:
+          unit={{ verify_cert_issuer.results[0].stat.exists }},
+          wrapper={{ verify_cert_issuer.results[1].stat.exists }},
+          serve_dir={{ verify_cert_issuer.results[2].stat.exists }},
+          cf_ini_present={{ verify_cert_issuer.results[3].stat.exists }},
+          published_cert_present={{ verify_cert_issuer.results[4].stat.exists }}
+
+    - name: Query the cert server unit state (installed but not started)
+      ansible.builtin.systemd:
+        name: substrate-certs.service
+      register: verify_certs_svc
+      changed_when: false
+
+    - name: Assert substrate-certs is not active (issuance skipped)
+      ansible.builtin.assert:
+        that:
+          - verify_certs_svc.status.ActiveState != 'active'
+        fail_msg: >-
+          substrate-certs ActiveState is {{ verify_certs_svc.status.ActiveState }},
+          but no cert should have been issued/served in CI
+
+
+    # ------------------------------------------------------------------
+    # cert_client: dest dir created, but fetch SKIPPED (no issuer host) — so
+    # no cert/key written locally.
+    # ------------------------------------------------------------------
+    - name: Stat cert_client dest dir and would-be artifacts
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: verify_cert_client
+      loop:
+        - /etc/substrate/certs                # 0: dir created unconditionally
+        - /etc/substrate/certs/fullchain.pem  # 1: MUST be absent (fetch skipped)
+        - /etc/substrate/certs/privkey.pem    # 2: MUST be absent (fetch skipped)
+
+    - name: Assert cert_client made its dir but wrote no cert (fetch skipped)
+      ansible.builtin.assert:
+        that:
+          - verify_cert_client.results[0].stat.exists
+          - not verify_cert_client.results[1].stat.exists
+          - not verify_cert_client.results[2].stat.exists
+        fail_msg: >-
+          cert_client skip contract violated: dir={{ verify_cert_client.results[0].stat.exists }},
+          fullchain={{ verify_cert_client.results[1].stat.exists }},
+          privkey={{ verify_cert_client.results[2].stat.exists }}
+
+    # ------------------------------------------------------------------
+    # dns: token absent -> reconcile SKIPPED. Assert the token file is absent
+    # (its presence would mean CI somehow held a Cloudflare secret).
+    # ------------------------------------------------------------------
+    - name: Stat the Cloudflare DNS token file
+      ansible.builtin.stat:
+        path: /etc/substrate/secrets/cloudflare-dns.ini
+      register: verify_dns_token
+
+    - name: Assert no Cloudflare DNS token exists in CI (reconcile skipped)
+      ansible.builtin.assert:
+        that:
+          - not verify_dns_token.stat.exists
+        fail_msg: "a Cloudflare DNS token file exists in CI — it must never be present here"
