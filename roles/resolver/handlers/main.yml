@@ -10,11 +10,19 @@
   when: ansible_service_mgr == 'systemd'
 
 # A binary/Corefile/wrapper change needs a full restart (new listener config).
+# Only restart once the tailnet is up, though: before enrolment the privileged
+# ExecStartPre cannot resolve the tailnet IP and systemd fails the start job, so
+# an unconditional restart would fail the converge. resolver_tailnet_up is set in
+# tasks/main.yml before handlers flush; when the tailnet is down we skip the
+# restart and let the enabled unit come up via Restart=on-failure / the reconcile
+# timer once tailscaled enrols.
 - name: Restart coredns
   ansible.builtin.systemd:
     name: "{{ resolver_service_name }}"
     state: restarted
-  when: ansible_service_mgr == 'systemd'
+  when:
+    - ansible_service_mgr == 'systemd'
+    - resolver_tailnet_up | default(false)
 
 # A zone-file change only needs CoreDNS to re-read it; SIGUSR1 (the unit's
 # ExecReload) reloads plugins without dropping the listener, so the resolver

@@ -156,10 +156,26 @@
     - (resolver_headscale_nodes.stdout | default('')) | trim | length > 0
 
 # ---------------------------------------------------------------------------
-# Service: install the unit, enable and start it. CoreDNS binds loopback + the
-# tailnet IPv4; if the tailnet IP is not up yet the wrapper exits non-zero and
-# Restart=on-failure retries, so the role never fails on a not-yet-enrolled node.
+# Service: install and enable the unit. CoreDNS binds loopback + the tailnet
+# IPv4, which the privileged ExecStartPre can only resolve once tailscaled is
+# enrolled. Before the tailnet is up that pre-command exits non-zero and systemd
+# fails the START JOB — so the role must NOT block on the service becoming active
+# then. Probe the tailnet IP: only (re)start-and-wait when it is up; otherwise
+# just enable the unit and let Restart=on-failure + the reconcile timer bring it
+# up on a later converge. This is the same "enrol later, retry" contract as
+# roles/tailnet.
 # ---------------------------------------------------------------------------
+- name: Probe whether this node has a tailnet IPv4 yet (gates the CoreDNS start)
+  ansible.builtin.command: tailscale ip -4
+  register: resolver_tailnet_ip
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Record whether the resolver can start now (tailnet up) or must wait
+  ansible.builtin.set_fact:
+    resolver_tailnet_up: "{{ (resolver_tailnet_ip.rc | default(1)) == 0 and (resolver_tailnet_ip.stdout | default('')) | trim | length > 0 }}"
+
 - name: Install the CoreDNS systemd unit
   ansible.builtin.template:
     src: coredns.service.j2
@@ -175,9 +191,22 @@
 - name: Flush handlers so the unit is on disk and reloaded before we start it
   ansible.builtin.meta: flush_handlers
 
-- name: Enable and start CoreDNS
+- name: Enable CoreDNS (always) and start it only once the tailnet is up
   ansible.builtin.systemd:
     name: "{{ resolver_service_name }}"
     enabled: true
-    state: started
+    # Start-and-wait only when the tailnet IP is resolvable; otherwise leave the
+    # service state untouched so a failing pre-start does not fail the converge.
+    state: "{{ 'started' if (resolver_tailnet_up | default(false)) else omit }}"
   when: ansible_service_mgr == 'systemd'
+
+- name: Note when CoreDNS start is deferred until the tailnet comes up
+  ansible.builtin.debug:
+    msg: >-
+      resolver: CoreDNS is enabled but NOT started on {{ inventory_hostname }} —
+      this node has no tailnet IPv4 yet, so the resolver cannot bind. systemd's
+      Restart=on-failure and the reconcile timer will start it once tailscaled is
+      enrolled; no action needed.
+  when:
+    - ansible_service_mgr == 'systemd'
+    - not (resolver_tailnet_up | default(false))
