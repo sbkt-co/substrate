@@ -10,5 +10,39 @@ ExecStart={{ cert_issuer_server_wrapper }}
 Restart=on-failure
 RestartSec=5
 
+# Run as a transient unprivileged user in the certserve group so it can read
+# the 0640-root:certserve private key without running as root. The serve
+# directory (0750 root:certserve) and its contents are the only files the
+# process touches; everything else is restricted below.
+DynamicUser=yes
+SupplementaryGroups={{ cert_issuer_serve_group }}
+
+# Filesystem hardening: the process only needs read access to the serve
+# directory. ProtectSystem=strict makes the whole filesystem hierarchy
+# read-only except for /dev, /proc, and paths explicitly unlocked.
+# The serve dir itself is read-only (no writes needed at runtime).
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths={{ cert_issuer_serve_dir }}
+PrivateTmp=true
+
+# Privilege hardening
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+
+# Kernel hardening
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Network: the wrapper calls `tailscale ip` (AF_UNIX to /run/tailscale/tailscaled.sock)
+# then serves over AF_INET. AF_UNIX is required for the tailscale CLI socket.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# MemoryDenyWriteExecute is intentionally omitted: CPython uses mmap(PROT_WRITE|
+# PROT_EXEC) for its memory allocator arenas and would be killed at startup with
+# MDWE enforced.
+
 [Install]
 WantedBy=multi-user.target

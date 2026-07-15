@@ -19,3 +19,8 @@ cert_issuer_serve_dir: /var/lib/substrate/certs
 cert_issuer_serve_port: 8444
 cert_issuer_server_wrapper: /usr/local/bin/substrate-certs-serve.sh
 cert_issuer_deploy_hook: /usr/local/bin/substrate-cert-deploy-hook.sh
+
+# System group whose members may read the servable certs. The cert-server
+# systemd unit runs as a DynamicUser with this supplementary group so that it
+# can read the private key (0640 root:certserve) without running as root.
+cert_issuer_serve_group: certserve
