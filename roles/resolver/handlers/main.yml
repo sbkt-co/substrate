@@ -1,0 +1,47 @@
+---
+# roles/resolver/handlers/main.yml
+#
+# CoreDNS restart/reload handlers, all guarded so the check-mode converge in a
+# plain container (CI validate) never tries to talk to systemd.
+
+- name: Reload systemd for coredns
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: ansible_service_mgr == 'systemd'
+
+# A binary/Corefile/wrapper change needs a full restart (new listener config).
+# Only restart once the tailnet is up, though: before enrolment the privileged
+# ExecStartPre cannot resolve the tailnet IP and systemd fails the start job, so
+# an unconditional restart would fail the converge. resolver_tailnet_up is set in
+# tasks/main.yml before handlers flush; when the tailnet is down we skip the
+# restart and let the enabled unit come up via Restart=on-failure / the reconcile
+# timer once tailscaled enrols.
+- name: Restart coredns
+  ansible.builtin.systemd:
+    name: "{{ resolver_service_name }}"
+    state: restarted
+  when:
+    - ansible_service_mgr == 'systemd'
+    - resolver_tailnet_up | default(false)
+
+# A zone-file change only needs CoreDNS to re-read it; SIGUSR1 (the unit's
+# ExecReload) reloads plugins without dropping the listener, so the resolver
+# never blips for a membership change. Reload is only valid on a RUNNING service,
+# though: before the tailnet is up the serve wrapper exits and CoreDNS is
+# crash-looping (inactive), and `systemctl reload` on an inactive unit errors.
+# Probe the state and reload only when active — a not-yet-started CoreDNS reads
+# the current zone the moment it does start, so skipping the reload loses nothing.
+- name: Probe CoreDNS active state before reloading
+  ansible.builtin.systemd:
+    name: "{{ resolver_service_name }}"
+  register: resolver_active_probe
+  changed_when: false
+  when: ansible_service_mgr == 'systemd'
+
+- name: Reload coredns
+  ansible.builtin.systemd:
+    name: "{{ resolver_service_name }}"
+    state: reloaded
+  when:
+    - ansible_service_mgr == 'systemd'
+    - (resolver_active_probe.status.ActiveState | default('')) == 'active'

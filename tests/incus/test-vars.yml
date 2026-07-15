@@ -26,6 +26,12 @@
 #   cert_issuer  — runs, finds no Cloudflare ini, SKIPS ACME issuance loudly;
 #                  still installs its unit/wrapper (no live DNS-01 in CI).
 #   cert_client  — runs with no issuer host pinned, SKIPS the fetch loudly.
+#   resolver     — installs CoreDNS for real (version-pinned binary, systemd
+#                  unit binding loopback + this node's tailnet IPv4). Because it
+#                  is co-located with headscale here and the node is enrolled, it
+#                  GENERATES /etc/coredns/internal.zone from `headscale nodes
+#                  list` for real. Fleet DNS wiring stays OFF (the gated var
+#                  defaults false), so headscale's config is unchanged.
 # ----------------------------------------------------------------------
 node_roles:
   - headscale
@@ -33,6 +39,7 @@ node_roles:
   - dns
   - cert_issuer
   - cert_client
+  - resolver
 
 # Single-node tailnet: the coordinator headscale binds loopback (the role
 # default), and this same node joins it as a client over loopback. run.sh mints

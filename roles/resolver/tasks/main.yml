@@ -1,0 +1,212 @@
+---
+# roles/resolver/tasks/main.yml
+#
+# Install and converge CoreDNS as the fleet's internal resolver
+# (docs/architecture.md section 8): a version-pinned single binary from GitHub
+# releases (checksum-verified, arch-aware), a Corefile that answers the internal
+# zone under substrate_domain from a hosts-file zone and forwards everything else
+# over DoT, and a systemd unit that binds :53 as an unprivileged user.
+#
+# Idempotent by design: the tarball is only fetched/extracted when the installed
+# binary version does not match resolver_version; the internal zone is generated
+# from `headscale nodes list` only when that CLI is present and succeeds (else it
+# skips loudly and leaves any existing zone in place — never a partial write);
+# and every command task is changed_when:false so a clean re-converge reports
+# changed=0 (the Incus harness gates on that).
+#
+# Load-bearing: FQCN modules, `when: ansible_service_mgr == 'systemd'` on every
+# systemd-touching task, quoted file modes.
+
+# ---------------------------------------------------------------------------
+# Install: version-gated, checksum-verified binary (mirrors roles/headscale).
+# ---------------------------------------------------------------------------
+- name: Probe the installed CoreDNS version
+  ansible.builtin.command: "{{ resolver_bin }} --version"
+  register: resolver_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Create the CoreDNS system group
+  ansible.builtin.group:
+    name: "{{ resolver_group }}"
+    system: true
+    state: present
+
+- name: Create the CoreDNS system user
+  ansible.builtin.user:
+    name: "{{ resolver_user }}"
+    group: "{{ resolver_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ resolver_config_dir }}"
+    create_home: false
+    state: present
+
+- name: Download the pinned CoreDNS release tarball (checksum-verified)
+  ansible.builtin.get_url:
+    url: "{{ resolver_tarball_url }}"
+    dest: "{{ resolver_tarball_dest }}"
+    # get_url fetches the .sha256 companion and verifies the download against it;
+    # a mismatch fails the task, so a tampered/truncated asset never installs.
+    checksum: "sha256:{{ resolver_checksum_url }}"
+    mode: "0644"
+  when: resolver_version not in (resolver_installed.stdout | default(''))
+
+- name: Extract the CoreDNS binary from the release tarball
+  ansible.builtin.unarchive:
+    src: "{{ resolver_tarball_dest }}"
+    dest: "{{ resolver_bin | dirname }}"
+    remote_src: true
+    include:
+      - coredns
+    owner: root
+    group: root
+    mode: "0755"
+  when: resolver_version not in (resolver_installed.stdout | default(''))
+  notify: Restart coredns
+
+# ---------------------------------------------------------------------------
+# Config: Corefile + serve wrapper + config dir.
+# ---------------------------------------------------------------------------
+- name: Ensure the CoreDNS config directory exists
+  ansible.builtin.file:
+    path: "{{ resolver_config_dir }}"
+    state: directory
+    owner: root
+    group: "{{ resolver_group }}"
+    mode: "0750"
+
+- name: Render the Corefile
+  ansible.builtin.template:
+    src: Corefile.j2
+    dest: "{{ resolver_corefile }}"
+    owner: root
+    group: "{{ resolver_group }}"
+    mode: "0640"
+  notify: Restart coredns
+
+- name: Install the CoreDNS bind-resolver (privileged ExecStartPre; resolves the tailnet IP)
+  ansible.builtin.template:
+    src: coredns-bind.sh.j2
+    dest: "{{ resolver_bind_resolver }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart coredns
+
+- name: Install the CoreDNS serve wrapper (ExecStart; binds loopback + the tailnet IP)
+  ansible.builtin.template:
+    src: coredns-serve.sh.j2
+    dest: "{{ resolver_wrapper }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart coredns
+
+# ---------------------------------------------------------------------------
+# Internal zone generation (section 8 "Generated" flow). Runs only where the
+# headscale CLI is present and answers; otherwise skips loudly and leaves any
+# existing zone file untouched. Never fails the converge, never writes a partial
+# zone.
+# ---------------------------------------------------------------------------
+- name: Probe for the headscale CLI (zone generation is only possible where it exists)
+  ansible.builtin.command: headscale version
+  register: resolver_headscale_cli
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: List tailnet nodes for the internal zone
+  ansible.builtin.command: headscale nodes list --output json
+  register: resolver_headscale_nodes
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: resolver_headscale_cli.rc == 0
+
+- name: Note when the internal zone cannot be generated (skip loudly, keep any existing zone)
+  ansible.builtin.debug:
+    msg: >-
+      resolver: internal zone generation SKIPPED on {{ inventory_hostname }} —
+      {% if resolver_headscale_cli.rc != 0 %}the headscale CLI is not present
+      (resolver is not co-located with headscale, or it is not installed yet)
+      {% else %}`headscale nodes list` returned rc={{ resolver_headscale_nodes.rc }}
+      (headscale not up yet){% endif %}.
+      Any existing {{ resolver_zone_file }} is left in place; the next reconcile
+      retries once headscale is answering.
+  when: >-
+    resolver_headscale_cli.rc != 0
+    or (resolver_headscale_nodes.rc | default(1)) != 0
+    or (resolver_headscale_nodes.stdout | default('')) | trim | length == 0
+
+- name: Generate the internal zone file from headscale node data
+  ansible.builtin.template:
+    src: internal.zone.j2
+    dest: "{{ resolver_zone_file }}"
+    owner: root
+    group: "{{ resolver_group }}"
+    mode: "0640"
+  vars:
+    resolver_nodes: "{{ resolver_headscale_nodes.stdout | from_json }}"
+  notify: Reload coredns
+  when:
+    - resolver_headscale_cli.rc == 0
+    - (resolver_headscale_nodes.rc | default(1)) == 0
+    - (resolver_headscale_nodes.stdout | default('')) | trim | length > 0
+
+# ---------------------------------------------------------------------------
+# Service: install and enable the unit. CoreDNS binds loopback + the tailnet
+# IPv4, which the privileged ExecStartPre can only resolve once tailscaled is
+# enrolled. Before the tailnet is up that pre-command exits non-zero and systemd
+# fails the START JOB — so the role must NOT block on the service becoming active
+# then. Probe the tailnet IP: only (re)start-and-wait when it is up; otherwise
+# just enable the unit and let Restart=on-failure + the reconcile timer bring it
+# up on a later converge. This is the same "enrol later, retry" contract as
+# roles/tailnet.
+# ---------------------------------------------------------------------------
+- name: Probe whether this node has a tailnet IPv4 yet (gates the CoreDNS start)
+  ansible.builtin.command: tailscale ip -4
+  register: resolver_tailnet_ip
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Record whether the resolver can start now (tailnet up) or must wait
+  ansible.builtin.set_fact:
+    resolver_tailnet_up: "{{ (resolver_tailnet_ip.rc | default(1)) == 0 and (resolver_tailnet_ip.stdout | default('')) | trim | length > 0 }}"
+
+- name: Install the CoreDNS systemd unit
+  ansible.builtin.template:
+    src: coredns.service.j2
+    dest: /etc/systemd/system/{{ resolver_service_name }}.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd for coredns
+    - Restart coredns
+  when: ansible_service_mgr == 'systemd'
+
+- name: Flush handlers so the unit is on disk and reloaded before we start it
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable CoreDNS (always) and start it only once the tailnet is up
+  ansible.builtin.systemd:
+    name: "{{ resolver_service_name }}"
+    enabled: true
+    # Start-and-wait only when the tailnet IP is resolvable; otherwise leave the
+    # service state untouched so a failing pre-start does not fail the converge.
+    state: "{{ 'started' if (resolver_tailnet_up | default(false)) else omit }}"
+  when: ansible_service_mgr == 'systemd'
+
+- name: Note when CoreDNS start is deferred until the tailnet comes up
+  ansible.builtin.debug:
+    msg: >-
+      resolver: CoreDNS is enabled but NOT started on {{ inventory_hostname }} —
+      this node has no tailnet IPv4 yet, so the resolver cannot bind. systemd's
+      Restart=on-failure and the reconcile timer will start it once tailscaled is
+      enrolled; no action needed.
+  when:
+    - ansible_service_mgr == 'systemd'
+    - not (resolver_tailnet_up | default(false))
