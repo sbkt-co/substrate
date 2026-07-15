@@ -249,6 +249,31 @@ What a compromised node yields, honestly:
   public-facing and `net.sbkt.co` is not in public DNS or CT logs). If node count
   or trust boundaries grow, move to per-node certs.
 
+## Cert-server trust contract
+
+The issuer node (`cert_issuer` role) runs a plain HTTP file server bound to its
+tailscale IPv4 and refuses to bind any other interface. Any tailnet peer can
+fetch the wildcard private key from it over that server with no application-layer
+authentication — the **access control is WireGuard + tailnet membership**.
+
+What this means in practice:
+
+- **Transport security:** the HTTP traffic travels inside the WireGuard tunnel
+  that makes up the tailnet. It is encrypted in transit and only reachable by
+  nodes that are tailnet members. The cert payload is NOT exposed to the public
+  internet.
+- **No per-node auth:** every enrolled tailnet peer can download the wildcard
+  private key. There is no bearer token, mTLS, or node-identity check at the
+  HTTP layer.
+- **Headscale ACLs are the lever.** If per-node restriction becomes necessary
+  (e.g. only `cert_client` hosts should fetch certs), add a Headscale ACL entry
+  restricting port 8444 (`cert_issuer_serve_port`) to those peers. Today all
+  tailnet members are trusted equally and no such restriction is in place.
+- **Service hardening:** the cert server runs as a sandboxed DynamicUser in the
+  `certserve` supplementary group. The private key in the serve directory is
+  mode `0640 root:certserve`; the process has no elevated privileges, a minimal
+  capability set, and no write access to the filesystem.
+
 ## Rotation
 
 Primary: **run `task secret:set NAME=<name>` again** with the fresh value (it is

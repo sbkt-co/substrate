@@ -16,13 +16,19 @@
     state: present
     update_cache: true
 
+- name: Ensure the cert-server system group exists
+  ansible.builtin.group:
+    name: "{{ cert_issuer_serve_group }}"
+    system: true
+    state: present
+
 - name: Ensure the servable cert directory exists
   ansible.builtin.file:
     path: "{{ cert_issuer_serve_dir }}"
     state: directory
     owner: root
-    group: root
-    mode: "0755"
+    group: "{{ cert_issuer_serve_group }}"
+    mode: "0750"
 
 - name: Install the certbot deploy hook (publishes renewals to the servable dir)
   ansible.builtin.template:
@@ -100,7 +106,7 @@
     dest: "{{ cert_issuer_serve_dir }}/fullchain.pem"
     remote_src: true
     owner: root
-    group: root
+    group: "{{ cert_issuer_serve_group }}"
     mode: "0644"
   when:
     - cert_issuer_live_stat.stat.exists
@@ -112,12 +118,32 @@
     dest: "{{ cert_issuer_serve_dir }}/privkey.pem"
     remote_src: true
     owner: root
-    group: root
-    mode: "0600"
+    group: "{{ cert_issuer_serve_group }}"
+    mode: "0640"
   no_log: true
   when:
     - cert_issuer_live_stat.stat.exists
     - not cert_issuer_serve_privkey_stat.stat.exists
+
+# Idempotent repair: ensure ownership and modes are correct on both servable
+# files regardless of how they were first published (out-of-band seed, old
+# converge before this hardening, deploy-hook before this change). These tasks
+# run unconditionally when the files exist; they are no-ops when already correct.
+- name: Ensure servable fullchain has correct ownership and mode
+  ansible.builtin.file:
+    path: "{{ cert_issuer_serve_dir }}/fullchain.pem"
+    owner: root
+    group: "{{ cert_issuer_serve_group }}"
+    mode: "0644"
+  when: cert_issuer_serve_fullchain_stat.stat.exists
+
+- name: Ensure servable private key has correct ownership and mode
+  ansible.builtin.file:
+    path: "{{ cert_issuer_serve_dir }}/privkey.pem"
+    owner: root
+    group: "{{ cert_issuer_serve_group }}"
+    mode: "0640"
+  when: cert_issuer_serve_privkey_stat.stat.exists
 
 - name: Install the tailnet cert-server wrapper
   ansible.builtin.template:
