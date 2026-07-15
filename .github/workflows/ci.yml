@@ -31,6 +31,14 @@ on:
     branches: [main, staging]
   pull_request:
   workflow_dispatch:
+  # Weekly scheduled converge: proves the self-hosted Incus runner is alive and
+  # exercises the full role set even when no reconciler-touching PR happens by.
+  # It drives ONLY the converge path (validate self-skips on `schedule` below),
+  # against staging. A missing/offline runner leaves this run queued and it
+  # fails visibly on timeout rather than passing in silence. 06:17 UTC Monday
+  # (off the top of the hour to dodge cron congestion).
+  schedule:
+    - cron: '17 6 * * 1'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -38,6 +46,9 @@ concurrency:
 
 jobs:
   validate:
+    # Skip on the weekly schedule: that run exists only to exercise converge on
+    # the self-hosted runner; re-running the (cheap) validate gate adds nothing.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -65,6 +76,9 @@ jobs:
   # Cheap gate: decide whether reconciler-relevant files changed, so the
   # expensive converge job can skip doc-only / unrelated changes.
   changes:
+    # No diff to filter on the weekly schedule — that run always converges, so
+    # this gate is skipped and converge's `if` handles the schedule case directly.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -95,25 +109,39 @@ jobs:
     needs: changes
     # Run only when it is worth the cost:
     #   - manual dispatch (always), or
+    #   - the weekly schedule (always) — runner health + full-role coverage, or
     #   - a PR whose diff touched reconciler-relevant paths (the `changes`
     #     filter) — REQUIRED, the label is no longer needed to trigger it, or
     #   - a PR carrying the `needs-converge` label — a manual override to force
     #     converge on a PR the path filter would not catch, or
     #   - a push to main/staging that touched reconciler-relevant paths.
     # A PR touching roles/** can no longer merge with converge silently skipped.
+    # The leading `!cancelled()` is required because the `changes` gate is skipped
+    # on `schedule` (and on dispatch): without it, this job would inherit that
+    # skip through `needs`. It still lets a genuine `changes` failure block us.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-        (needs.changes.outputs.converge == 'true' ||
-         contains(github.event.pull_request.labels.*.name, 'needs-converge'))) ||
-      (github.event_name == 'push' && needs.changes.outputs.converge == 'true')
+      !cancelled() && needs.changes.result != 'failure' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'schedule' ||
+       (github.event_name == 'pull_request' &&
+         (needs.changes.outputs.converge == 'true' ||
+          contains(github.event.pull_request.labels.*.name, 'needs-converge'))) ||
+       (github.event_name == 'push' && needs.changes.outputs.converge == 'true'))
     # The Incus host. On a self-hosted runner Incus is already installed; the
     # Install Incus step below self-skips off github-hosted, so flipping this
     # back to `ubuntu-latest` still works as a fallback.
     runs-on: [self-hosted, linux, incus]
+    # Bound the wall clock so an offline/absent self-hosted runner turns into a
+    # visibly failed (timed-out) run instead of a job queued forever in silence —
+    # the whole point of the weekly schedule is to surface runner death.
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # `schedule` runs on the default branch; pin the checkout to staging so
+          # the weekly converge always exercises the staging tree (the PR target).
+          ref: ${{ github.event_name == 'schedule' && 'staging' || github.ref }}
 
       # Only needed on github-hosted runners, which have no Incus and whose
       # Docker install sets the iptables FORWARD policy to DROP (blocking the
@@ -162,15 +190,24 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           ansible-galaxy collection install -r requirements.yml
 
+      # Derive the cache key from prebake.sh itself: the fingerprint hashes the
+      # pinned base image id + the prereq package list, so editing either rolls
+      # the key automatically. No more manual `-v1` suffix to remember to bump —
+      # and prebake.sh applies the SAME fingerprint (plus a max-age rebake) to the
+      # persistent self-hosted image, so both the tarball cache and the local
+      # alias refresh in lockstep with the content that defines the image.
+      - name: Compute prebake fingerprint
+        id: prebake
+        run: echo "fingerprint=$(tests/incus/prebake.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+
       # Prebake (base node image + python3/sudo) cached as a tarball, so the
       # converge test skips the in-container apt entirely on a cache hit. On a
       # self-hosted runner the image persists in Incus and is reused directly.
-      # Bump the key suffix to force a rebuild (e.g. for base-image updates).
       - name: Cache prebaked node image
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /tmp/incus-image
-          key: incus-node-trixie-py3-v1
+          key: incus-node-trixie-${{ steps.prebake.outputs.fingerprint }}
 
       - name: Prepare prebaked node image
         run: sg incus-admin -c 'tests/incus/prebake.sh'
