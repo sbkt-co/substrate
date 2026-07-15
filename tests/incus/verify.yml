@@ -370,6 +370,18 @@
       register: verify_coredns_svc
       changed_when: false
 
+    - name: Dump CoreDNS journal when it is not active (diagnostic)
+      ansible.builtin.command: journalctl -u coredns --no-pager -n 40
+      register: verify_coredns_journal
+      changed_when: false
+      failed_when: false
+      when: verify_coredns_svc.status.ActiveState != "active"
+
+    - name: Show the CoreDNS journal diagnostic
+      ansible.builtin.debug:
+        var: verify_coredns_journal.stdout_lines
+      when: verify_coredns_svc.status.ActiveState != "active"
+
     - name: Assert CoreDNS is active (wrapper resolved the tailnet IP and bound)
       ansible.builtin.assert:
         that:
