@@ -12,11 +12,12 @@ if [ ! -r "{{ resolver_bind_file }}" ]; then
     exit 1
 fi
 
-# CoreDNS substitutes {$COREDNS_BIND} in the Corefile with this value; the bind
-# plugin then listens on loopback and the tailnet IP.
-COREDNS_BIND="$(cat {{ resolver_bind_file }})"
-export COREDNS_BIND
-if [ -z "$COREDNS_BIND" ]; then
+# CoreDNS substitutes {$COREDNS_TAILNET_IP} in the Corefile with this value; the
+# bind plugin then listens on loopback (a literal in the Corefile) and this IP.
+# Env substitution does not split on whitespace, so exactly one address here.
+COREDNS_TAILNET_IP="$(cat {{ resolver_bind_file }})"
+export COREDNS_TAILNET_IP
+if [ -z "$COREDNS_TAILNET_IP" ]; then
     echo "bind file {{ resolver_bind_file }} is empty (no tailnet IP yet); refusing to start" >&2
     exit 1
 fi

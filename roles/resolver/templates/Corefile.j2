@@ -5,12 +5,13 @@
 # a git/generated hosts-file zone with fallthrough), everything else forwarded to
 # public upstreams over DoT.
 #
-# COREDNS_BIND is exported by the serve wrapper ({{ resolver_wrapper }}) at start
-# time: loopback plus the node's tailnet IPv4, so the resolver is reachable on
-# the tailnet but never on a public interface.
+# COREDNS_TAILNET_IP is exported by the serve wrapper ({{ resolver_wrapper }}) at
+# start time (this node's tailnet IPv4). Combined with the literal loopback, the
+# resolver is reachable on the tailnet but never on a public interface. CoreDNS
+# env substitution yields a single token, so loopback is a literal here.
 
 {{ substrate_domain }}:{{ resolver_listen_port }} {
-    bind {$COREDNS_BIND}
+    bind 127.0.0.1 {$COREDNS_TAILNET_IP}
     # Internal names are answered from the hosts-format zone; a miss falls
     # through to the forward below so public {{ substrate_domain }} names still
     # resolve instead of NXDOMAIN'ing under our authority.
@@ -26,7 +27,7 @@
 }
 
 .:{{ resolver_listen_port }} {
-    bind {$COREDNS_BIND}
+    bind 127.0.0.1 {$COREDNS_TAILNET_IP}
     forward . {{ resolver_forwarders | join(' ') }} {
         tls_servername {{ resolver_forward_tls_servername }}
     }

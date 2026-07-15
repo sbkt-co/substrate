@@ -18,6 +18,8 @@ if [ -z "$IP" ]; then
     exit 1
 fi
 
-# Loopback + the tailnet IP, consumed by the ExecStart wrapper and substituted
-# into the Corefile's bind directive.
-printf '127.0.0.1 %s' "$IP" > "{{ resolver_bind_file }}"
+# Just the tailnet IPv4. CoreDNS env substitution ({$VAR}) does NOT split on
+# whitespace — it yields a single token — so a space-separated "lo ts" list is
+# rejected by the bind plugin. Loopback is therefore a literal in the Corefile
+# and only this one dynamic address travels through the env var.
+printf '%s' "$IP" > "{{ resolver_bind_file }}"
