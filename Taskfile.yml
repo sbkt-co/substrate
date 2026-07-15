@@ -256,8 +256,8 @@ tasks:
         echo
         echo "optional:"
         check gum             optional "brew install gum  (nicer ./substrate menu; pure-bash fallback works without it)"
-        check sops            optional "brew install sops (needed only once secret:encrypt lands)"
-        check age             optional "brew install age  (paired with sops for secret:encrypt)"
+        check sops            optional "brew install sops (used by task secret:set to encrypt secrets into git)"
+        check age             optional "brew install age  (paired with sops for task secret:set)"
         echo
         if [ "$missing" -eq 0 ]; then
           echo "All required tooling present."
