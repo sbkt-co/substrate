@@ -17,7 +17,7 @@ have to remember a command — pick it from the menu, or run `task <name>`
 | add a machine | `task node:add NAME=<hostname>` |
 | check a node (status/timer) | `task node:status NODE=<name>` |
 | sweep the whole fleet's status | `task fleet:status` |
-| seed or rotate a secret | `task secret:seed -- <target> <name>` |
+| publish or rotate a secret | `task secret:set NAME=<name>` |
 | bring up the staging fleet | `task staging:up` |
 | staging fleet health | `task staging:status` |
 | watch a node reconcile | `task staging:logs NODE=<name>` |
@@ -148,6 +148,20 @@ export SUBSTRATE_TAILNET_AUTHKEY=...     # mint: incus exec staging-core --proje
 curl -fsSL https://raw.githubusercontent.com/sbkt-co/substrate/main/bootstrap/bootstrap.sh | bash
 ```
 
+Bootstrap prints a REGISTER block at the end of its output — paste it into your terminal on
+the operator workstation to register the node's age public key so it can receive SOPS-encrypted
+secrets:
+
+```sh
+scripts/secret.sh register-node <age1pubkey> --groups <group1>[,<group2>]
+```
+
+The groups match the node's intended roles (e.g. `acme_nodes` for a `cert_issuer` node; see
+[secrets.md](secrets.md) for the full group→role mapping). If you skip this step, the node
+bootstraps and converges normally but cannot decrypt any committed SOPS secret — roles that
+need them will skip loudly on every converge until the key is registered and `task secret:set`
+is re-run to encrypt to the new recipient.
+
 Then tell git what the machine is: add `host_vars/<its-hostname>.yml`
 with a `node_roles:` list (copy `host_vars/example.yml`) and PR it via
 workflow 1. The node picks its roles up on the next pull.
@@ -159,23 +173,50 @@ tests/incus/colima-up.sh                          # macOS only, once
 SUBSTRATE_INCUS_REMOTE=colima-incus staging/up.sh
 ```
 
-## 3. Seed or rotate a secret
+## 3. Publish or rotate a secret
 
-Secrets are root-only files on the node, never in git. The three files
-live in `/etc/substrate/secrets/`. On a real node they're seeded by env
-vars at bootstrap (workflow 2). For the full model — which file holds
-what, scopes, and rotation — see [secrets.md](secrets.md). To place one
-by hand, e.g. the ACME token on staging-core:
+The primary mechanism is one command. You do not need to know about age keys, `.sops.yaml`,
+or recipient groups — `secret:set` handles all of it:
 
 ```sh
+task secret:set NAME=acme        # acme | cloudflare-dns | tailnet-authkey
+```
+
+It resolves which nodes run the secret's role, fetches their age public keys, reads the value
+from a hidden prompt, encrypts to `secrets/<name>.sops.yaml`, and opens a PR into staging.
+Rotation is the same command with the new value (then revoke the old credential upstream).
+See [secrets.md](secrets.md) for the full model — scopes, recipient groups, formats, and the
+`secret:status` command that shows current publish state.
+
+```sh
+task secret:status               # read-only: shows published state and per-node decrypt status
+```
+
+**Fallback — node-local only (no git, for bootstrapping or emergencies).**
+Use this when the node has no age key registered yet (e.g. a brand-new real cloud node before
+workflow 2's REGISTER step is complete), or when placing a secret that intentionally lives
+only on the node (e.g. `alert-webhook`). Seed the file directly:
+
+```sh
+# staging Incus node:
 incus exec staging-core --project substrate-staging -- sh -c \
   'umask 077; printf "dns_cloudflare_api_token = YOUR_TOKEN\n" \
    > /etc/substrate/secrets/cloudflare.ini'
+
+# real node (via ssh or console):
+umask 077; printf 'dns_cloudflare_api_token = %s\n' "$TOKEN" \
+  > /etc/substrate/secrets/cloudflare.ini
+chmod 0600 /etc/substrate/secrets/cloudflare.ini
 ```
 
-The next reconcile picks it up (cert issuance runs against the Let's
-Encrypt STAGING endpoint until `substrate_acme_staging: false` in
-`group_vars/all.yml` — flip it via workflow 1 once certs look right).
+The next reconcile picks it up. If a `secrets/<name>.sops.yaml` exists for the same
+destination, the SOPS-decrypted value overwrites the hand-seeded one on converge — that
+is the point (git wins). For the `secret:seed` task wrapper and the full skip-loudly
+contract, see [secrets.md](secrets.md).
+
+Cert issuance runs against the Let's Encrypt STAGING endpoint until
+`substrate_acme_staging: false` in `group_vars/all.yml` — flip it via workflow 1
+once certs look right.
 
 ## Alerting and fleet status
 
@@ -453,7 +494,7 @@ story is a known gap.
 |---|---|
 | change anything | branch off `staging` → PR → merge → wait 5 min |
 | ship staging to prod | `git push origin origin/staging:main` (ff-only) |
-| add a server | bootstrap.sh with `SUBSTRATE_BRANCH` + authkey, PR its `host_vars` file |
+| add a server | bootstrap.sh with `SUBSTRATE_BRANCH` + authkey, register age key, PR its `host_vars` file |
 | undo a change | `git revert` on `staging` via PR |
 | check a node | `cat /etc/substrate/status.yml` on the node |
 | validate before PR | `tests/run.sh` |

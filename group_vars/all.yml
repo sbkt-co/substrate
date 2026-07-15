@@ -39,7 +39,7 @@ substrate_secrets_dir: /etc/substrate/secrets
 # The plaintext byte-for-byte matches what the seeding/env fallback would write
 # (see docs/secrets.md); only nodes registered as recipients can decrypt an entry,
 # and non-recipients skip it loudly. Values NEVER live here — only ciphertext file
-# paths. Add/rotate a value with:  scripts/secret.sh encrypt <name>  (then commit).
+# paths. Add/rotate a value with:  scripts/secret.sh set <name>  (opens a PR).
 substrate_sops_secrets:
   - src: "secrets/cloudflare-dns.sops.yaml"      # roles/dns  (CLOUDFLARE_API_TOKEN=<value>)
     dest: "{{ substrate_secrets_dir }}/cloudflare-dns.ini"

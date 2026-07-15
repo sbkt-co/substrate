@@ -130,8 +130,10 @@ secrets/<name>.sops.yaml   (git, ciphertext)   -- encrypted to registered node a
   seeded by hand (or the env fallback) is REPLACED on the next converge *if* a
   sops file exists for it — that is the point.
 
-The three committed secrets and their canonical dests (formats are **not**
-interchangeable):
+The three secrets defined in the manifest and their canonical dests (formats are **not**
+interchangeable). Publication state varies — a ciphertext file exists in `secrets/` only once
+`task secret:set` has been run for that name. Check current state with `ls secrets/` or
+`task secret:status`.
 
 | sops file | Group | Dest file | Format | Consumed by |
 |-----------|-------|-----------|--------|-------------|
@@ -142,6 +144,11 @@ interchangeable):
 `cloudflare-dns.ini` uses `KEY=VALUE` (no spaces; parsed with `.split('=', 1)[1]`);
 `cloudflare.ini` uses the certbot ini form `key = value` (spaces) passed verbatim
 to certbot. Every task touching secret content runs with `no_log: true`.
+
+The `.sops.yaml` recipient groups list the registered node age public keys per purpose; a
+group with no registered keys causes `secret:set` to refuse (no recipients = unreadable
+ciphertext). Register keys before publishing. See `task secret:status` and the
+`scripts/secret.sh register-node` reference below.
 
 ### 2. Node-local files (what the roles read; also the fallback surface)
 
