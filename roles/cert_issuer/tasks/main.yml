@@ -77,7 +77,24 @@
     path: "{{ cert_issuer_live_dir }}/fullchain.pem"
   register: cert_issuer_live_stat
 
-- name: Publish the live fullchain to the servable directory
+# Steady-state publishing is owned by the certbot deploy hook, which republishes
+# both servable files after every issuance/renewal. The copies below are a
+# FIRST-TIME bootstrap only: they run when a live cert exists but its servable
+# copy is still absent (e.g. the cert was issued out of band, or the serve dir
+# was wiped), repairing the node without waiting for the next renewal. Guarding
+# on absence keeps re-converge at changed=0 and stops the redundant no_log
+# privkey copy from running on every reconcile.
+- name: Check whether the servable fullchain copy exists
+  ansible.builtin.stat:
+    path: "{{ cert_issuer_serve_dir }}/fullchain.pem"
+  register: cert_issuer_serve_fullchain_stat
+
+- name: Check whether the servable private key copy exists
+  ansible.builtin.stat:
+    path: "{{ cert_issuer_serve_dir }}/privkey.pem"
+  register: cert_issuer_serve_privkey_stat
+
+- name: Publish the live fullchain to the servable directory (first-time bootstrap)
   ansible.builtin.copy:
     src: "{{ cert_issuer_live_dir }}/fullchain.pem"
     dest: "{{ cert_issuer_serve_dir }}/fullchain.pem"
@@ -85,9 +102,11 @@
     owner: root
     group: root
     mode: "0644"
-  when: cert_issuer_live_stat.stat.exists
+  when:
+    - cert_issuer_live_stat.stat.exists
+    - not cert_issuer_serve_fullchain_stat.stat.exists
 
-- name: Publish the live private key to the servable directory
+- name: Publish the live private key to the servable directory (first-time bootstrap)
   ansible.builtin.copy:
     src: "{{ cert_issuer_live_dir }}/privkey.pem"
     dest: "{{ cert_issuer_serve_dir }}/privkey.pem"
@@ -96,7 +115,9 @@
     group: root
     mode: "0600"
   no_log: true
-  when: cert_issuer_live_stat.stat.exists
+  when:
+    - cert_issuer_live_stat.stat.exists
+    - not cert_issuer_serve_privkey_stat.stat.exists
 
 - name: Install the tailnet cert-server wrapper
   ansible.builtin.template:

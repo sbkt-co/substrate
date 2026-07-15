@@ -108,14 +108,17 @@ if command -v age-keygen >/dev/null 2>&1; then
         cat >&2 <<EOF
 
 # =====================================================================
-# REGISTER THIS NODE KEY so it can decrypt committed secrets:
+# REGISTER THIS NODE KEY so it can decrypt committed secrets. The normal
+# path is one command per secret it should receive — it registers this
+# key and opens a PR:
 #
-#   scripts/secret.sh register-node ${AGE_PUBKEY} \\
-#       --groups <dns_nodes|acme_nodes|tailnet_nodes[,...]>
+#   scripts/secret.sh set <cloudflare-dns|acme|tailnet-authkey> \\
+#       --key ${AGE_PUBKEY}
 #
-# then commit + PR the updated .sops.yaml and secrets/*.sops.yaml.
-# The node picks up any secret it becomes a recipient of on its next
-# reconcile. (Private key stays on this node and was never printed.)
+# (Reachable nodes are discovered automatically; --key names this node
+# explicitly.) The node picks up any secret it becomes a recipient of on
+# its next reconcile. (Private key stays on this node and was never
+# printed.)
 # =====================================================================
 
 EOF

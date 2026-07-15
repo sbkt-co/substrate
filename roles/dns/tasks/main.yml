@@ -69,36 +69,60 @@
           register: dns_token_slurp
           no_log: true
 
-        - name: Set the API token fact
+        # A seeded-but-malformed file must SKIP LOUDLY, exactly like the absent
+        # path — never hard-fail the whole converge. The canonical format is a
+        # single line 'CLOUDFLARE_API_TOKEN=<nonempty>'; anything else (missing
+        # '=', wrong key, empty value) is treated as unusable. The regex-only
+        # check never exposes the token, so this stays no_log.
+        - name: Validate the seeded token matches CLOUDFLARE_API_TOKEN=<nonempty>
           ansible.builtin.set_fact:
-            dns_api_token: "{{ (dns_token_slurp.content | b64decode).split('=', 1)[1] | trim }}"
+            dns_token_valid: "{{ (dns_token_slurp.content | b64decode) is regex('^\\s*CLOUDFLARE_API_TOKEN=\\S.*$') }}"
           no_log: true
 
-        - name: Ensure present records exist in the public zone
-          community.general.cloudflare_dns:
-            api_token: "{{ dns_api_token }}"
-            zone: "{{ dns_zone }}"
-            record: "{{ item.name }}"
-            type: "{{ item.type }}"
-            value: "{{ item.value }}"
-            # Cloudflare requires ttl=1 ("automatic") for proxied records.
-            ttl: "{{ 1 if (item.proxied | default(false)) else (item.ttl | default(dns_default_ttl)) }}"
-            proxied: "{{ item.proxied | default(false) }}"
-            state: present
-          loop: "{{ dns_records_present }}"
-          loop_control:
-            label: "{{ item.type }} {{ item.name }}"
-          no_log: true
+        - name: Warn and skip DNS reconcile when the token file is malformed
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: Cloudflare API token file {{ dns_token_file }} is present
+              but MALFORMED — SKIPPING public DNS reconcile for zone {{ dns_zone }}.
+              It must contain a single line
+              'CLOUDFLARE_API_TOKEN=<token>' (a scoped token with DNS:Edit on the
+              zone), with a non-empty value. Re-seed it in that exact format. No
+              records were changed.
+          when: not dns_token_valid
 
-        - name: Ensure absent records are removed from the public zone
-          community.general.cloudflare_dns:
-            api_token: "{{ dns_api_token }}"
-            zone: "{{ dns_zone }}"
-            record: "{{ item.name }}"
-            type: "{{ item.type }}"
-            value: "{{ item.value }}"
-            state: absent
-          loop: "{{ dns_records_absent }}"
-          loop_control:
-            label: "{{ item.type }} {{ item.name }}"
-          no_log: true
+        - name: Reconcile records against Cloudflare with the seeded token
+          when: dns_token_valid | bool
+          block:
+            - name: Set the API token fact
+              ansible.builtin.set_fact:
+                dns_api_token: "{{ (dns_token_slurp.content | b64decode).split('=', 1)[1] | trim }}"
+              no_log: true
+
+            - name: Ensure present records exist in the public zone
+              community.general.cloudflare_dns:
+                api_token: "{{ dns_api_token }}"
+                zone: "{{ dns_zone }}"
+                record: "{{ item.name }}"
+                type: "{{ item.type }}"
+                value: "{{ item.value }}"
+                # Cloudflare requires ttl=1 ("automatic") for proxied records.
+                ttl: "{{ 1 if (item.proxied | default(false)) else (item.ttl | default(dns_default_ttl)) }}"
+                proxied: "{{ item.proxied | default(false) }}"
+                state: present
+              loop: "{{ dns_records_present }}"
+              loop_control:
+                label: "{{ item.type }} {{ item.name }}"
+              no_log: true
+
+            - name: Ensure absent records are removed from the public zone
+              community.general.cloudflare_dns:
+                api_token: "{{ dns_api_token }}"
+                zone: "{{ dns_zone }}"
+                record: "{{ item.name }}"
+                type: "{{ item.type }}"
+                value: "{{ item.value }}"
+                state: absent
+              loop: "{{ dns_records_absent }}"
+              loop_control:
+                label: "{{ item.type }} {{ item.name }}"
+              no_log: true
