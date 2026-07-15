@@ -1,0 +1,61 @@
+---
+# roles/resolver/defaults/main.yml
+#
+# CoreDNS as the fleet's internal resolver (docs/architecture.md section 8). A
+# single-binary systemd service, authoritative for the git-managed internal zone
+# under substrate_domain and forwarding everything else to public upstreams over
+# DoT. Co-located with headscale on the core node so the zone generator has local
+# `headscale` CLI access.
+#
+# Every tunable lives here with a safe default; override in host_vars. Never
+# redefine fleet-wide vars from group_vars/all.yml (substrate_domain, etc.).
+
+# Pinned CoreDNS release. Bump deliberately; the role only re-downloads when the
+# installed binary version does not match this exact string.
+resolver_version: "1.14.6"
+
+# Map Ansible's architecture facts onto the arch slug CoreDNS release assets use.
+# Covers the two fleet targets: cloud x86_64 and local aarch64.
+resolver_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+resolver_arch: "{{ resolver_arch_map[ansible_architecture] | default('amd64') }}"
+
+# Release tarball published on GitHub (e.g. coredns_1.14.6_linux_amd64.tgz) and
+# its companion .sha256 file. get_url fetches that checksum file and verifies the
+# download against it, so a tampered/truncated asset fails the converge loudly.
+resolver_release_base: "https://github.com/coredns/coredns/releases/download/v{{ resolver_version }}"
+resolver_tarball_name: "coredns_{{ resolver_version }}_linux_{{ resolver_arch }}.tgz"
+resolver_tarball_url: "{{ resolver_release_base }}/{{ resolver_tarball_name }}"
+resolver_checksum_url: "{{ resolver_tarball_url }}.sha256"
+resolver_tarball_dest: "/tmp/{{ resolver_tarball_name }}"
+
+# Install locations and the dedicated unprivileged system account CoreDNS runs
+# as. The binary binds :53 via cap_net_bind_service (AmbientCapabilities), never
+# as root.
+resolver_bin: /usr/local/bin/coredns
+resolver_user: coredns
+resolver_group: coredns
+resolver_config_dir: /etc/coredns
+resolver_corefile: "{{ resolver_config_dir }}/Corefile"
+resolver_zone_file: "{{ resolver_config_dir }}/internal.zone"
+resolver_wrapper: /usr/local/bin/coredns-serve.sh
+resolver_service_name: coredns
+
+# Upstream resolvers CoreDNS forwards non-internal queries to, over DoT. Var-
+# driven so an environment can point at a different encrypted upstream. The TLS
+# SNI must match the upstream's certificate.
+resolver_forwarders:
+  - "tls://1.1.1.1"
+  - "tls://1.0.0.1"
+resolver_forward_tls_servername: cloudflare-dns.com
+
+# DNS listen port. 53 by default; bound on loopback + the node's tailnet IPv4
+# only (resolved at service start by the wrapper), never a public interface.
+resolver_listen_port: 53
+
+# The GATED fleet DNS-wiring vars (substrate_resolver_wire_dns,
+# substrate_resolver_address) are fleet-scoped — consumed by BOTH this role and
+# roles/headscale's config template — so they live in group_vars/all.yml (with
+# safe defaults: wiring OFF), not here. Pointing headscale at CoreDNS is a
+# separate, deliberate change; see docs/runbook.md.

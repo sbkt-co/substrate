@@ -25,6 +25,7 @@
       - dns
       - cert_issuer
       - cert_client
+      - resolver
 
   tasks:
     # ------------------------------------------------------------------
@@ -306,3 +307,86 @@
         that:
           - not verify_dns_token.stat.exists
         fail_msg: "a Cloudflare DNS token file exists in CI — it must never be present here"
+
+    # ------------------------------------------------------------------
+    # resolver: CoreDNS binary + Corefile + unit installed; the internal zone
+    # was GENERATED for real (headscale is co-located and the node is enrolled),
+    # and the service is active (the wrapper resolved the tailnet IP and bound
+    # loopback + tailnet). Fleet DNS wiring stays OFF: headscale's config must
+    # NOT point nodes at CoreDNS (the gated var defaults false).
+    # ------------------------------------------------------------------
+    - name: Stat resolver artifacts
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: verify_resolver_paths
+      loop:
+        - /usr/local/bin/coredns                       # 0: binary installed
+        - /etc/coredns/Corefile                        # 1: config rendered
+        - /usr/local/bin/coredns-serve.sh              # 2: serve wrapper
+        - /etc/systemd/system/coredns.service          # 3: unit installed
+        - /etc/coredns/internal.zone                   # 4: zone GENERATED (headscale co-located + enrolled)
+
+    - name: Assert resolver installed its binary, config, wrapper, unit, and generated the zone
+      ansible.builtin.assert:
+        that:
+          - verify_resolver_paths.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+        fail_msg: >-
+          resolver artifacts missing:
+          {{ verify_resolver_paths.results | selectattr('stat.exists', 'equalto', false) | map(attribute='item') | list }}
+
+    - name: Read the rendered Corefile
+      ansible.builtin.slurp:
+        src: /etc/coredns/Corefile
+      register: verify_corefile
+
+    - name: Assert the Corefile forwards over DoT with the expected upstreams and SNI
+      ansible.builtin.assert:
+        that:
+          - "'forward . tls://1.1.1.1 tls://1.0.0.1' in (verify_corefile.content | b64decode)"
+          - "'tls_servername cloudflare-dns.com' in (verify_corefile.content | b64decode)"
+          - "'hosts /etc/coredns/internal.zone' in (verify_corefile.content | b64decode)"
+          - "'fallthrough' in (verify_corefile.content | b64decode)"
+        fail_msg: "Corefile is missing the expected internal-zone / DoT-forward configuration"
+
+    - name: Read the generated internal zone
+      ansible.builtin.slurp:
+        src: /etc/coredns/internal.zone
+      register: verify_zone
+
+    - name: Assert the internal zone maps this node's name into substrate_domain
+      # The single-node harness enrolled itself, so the generated hosts-format
+      # zone must contain at least one <tailnet-ipv4> <name>.sbkt.co line.
+      ansible.builtin.assert:
+        that:
+          - (verify_zone.content | b64decode | trim) | length > 0
+          - "'.sbkt.co' in (verify_zone.content | b64decode)"
+        fail_msg: >-
+          internal.zone was not generated with any node record:
+          {{ verify_zone.content | b64decode }}
+
+    - name: Query CoreDNS service state
+      ansible.builtin.systemd:
+        name: coredns
+      register: verify_coredns_svc
+      changed_when: false
+
+    - name: Assert CoreDNS is active (wrapper resolved the tailnet IP and bound)
+      ansible.builtin.assert:
+        that:
+          - verify_coredns_svc.status.ActiveState == "active"
+        fail_msg: >-
+          coredns ActiveState is {{ verify_coredns_svc.status.ActiveState }}, expected active
+          (the serve wrapper should have resolved this node's tailnet IPv4 and started)
+
+    - name: Read the headscale config to confirm fleet DNS wiring stayed OFF
+      ansible.builtin.slurp:
+        src: /etc/headscale/config.yaml
+      register: verify_headscale_dns
+
+    - name: Assert headscale was NOT wired to CoreDNS (gated var defaults off)
+      ansible.builtin.assert:
+        that:
+          - "'override_local_dns: true' not in (verify_headscale_dns.content | b64decode)"
+        fail_msg: >-
+          headscale config emitted override_local_dns, but substrate_resolver_wire_dns
+          defaults false — the resolver wiring must be inert until explicitly enabled

@@ -1,0 +1,26 @@
+---
+# roles/resolver/handlers/main.yml
+#
+# CoreDNS restart/reload handlers, all guarded so the check-mode converge in a
+# plain container (CI validate) never tries to talk to systemd.
+
+- name: Reload systemd for coredns
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: ansible_service_mgr == 'systemd'
+
+# A binary/Corefile/wrapper change needs a full restart (new listener config).
+- name: Restart coredns
+  ansible.builtin.systemd:
+    name: "{{ resolver_service_name }}"
+    state: restarted
+  when: ansible_service_mgr == 'systemd'
+
+# A zone-file change only needs CoreDNS to re-read it; SIGUSR1 reloads plugins
+# without dropping the listener, so the resolver never blips for a membership
+# change. Falls back cleanly because the unit runs `coredns` under the wrapper.
+- name: Reload coredns
+  ansible.builtin.systemd:
+    name: "{{ resolver_service_name }}"
+    state: reloaded
+  when: ansible_service_mgr == 'systemd'

@@ -1,0 +1,21 @@
+#!/bin/sh
+{{ ansible_managed | comment }}
+# Resolve the node's tailnet IPv4 and start CoreDNS bound to loopback + that IP
+# ONLY, so the internal resolver is reachable on the tailnet but never on a
+# public interface. Refuses to start before the tailnet is up; the unit's
+# Restart=on-failure then retries until `tailscaled` has an address. Managed by
+# roles/resolver.
+set -eu
+
+IP="$(tailscale ip -4 2>/dev/null | head -n1)"
+if [ -z "$IP" ]; then
+    echo "no tailscale IPv4 address yet; refusing to start the resolver off-tailnet (will retry)" >&2
+    exit 1
+fi
+
+# CoreDNS substitutes {$COREDNS_BIND} in the Corefile with this value; the bind
+# plugin then listens on loopback and the tailnet IP.
+COREDNS_BIND="127.0.0.1 ${IP}"
+export COREDNS_BIND
+
+exec {{ resolver_bin }} -conf {{ resolver_corefile }}
