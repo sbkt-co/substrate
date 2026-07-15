@@ -1,0 +1,25 @@
+#!/bin/sh
+{{ ansible_managed | comment }}
+# Privileged ExecStartPre for CoreDNS (systemd runs this with a leading '+', i.e.
+# as root, even though the service User is {{ resolver_user }}). Querying the
+# tailnet IP needs access to the tailscaled control socket, which the
+# unprivileged {{ resolver_user }} user cannot read — so the lookup happens here,
+# as root, and the result is handed to the unprivileged ExecStart via
+# {{ resolver_bind_file }} (in the RuntimeDirectory, owned by {{ resolver_user }}).
+#
+# Refuses (exits non-zero) before the tailnet is up, so systemd's
+# Restart=on-failure retries the whole unit rather than starting CoreDNS on a
+# public interface. Managed by roles/resolver.
+set -eu
+
+IP="$(tailscale ip -4 2>/dev/null | head -n1)"
+if [ -z "$IP" ]; then
+    echo "no tailscale IPv4 address yet; refusing to start the resolver off-tailnet (will retry)" >&2
+    exit 1
+fi
+
+# Just the tailnet IPv4. CoreDNS env substitution ({$VAR}) does NOT split on
+# whitespace — it yields a single token — so a space-separated "lo ts" list is
+# rejected by the bind plugin. Loopback is therefore a literal in the Corefile
+# and only this one dynamic address travels through the env var.
+printf '%s' "$IP" > "{{ resolver_bind_file }}"

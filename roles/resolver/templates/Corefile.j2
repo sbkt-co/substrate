@@ -1,0 +1,37 @@
+{{ ansible_managed | comment }}
+# Rendered by roles/resolver. Do not edit by hand; change the role defaults or
+# host_vars and re-converge. Implements docs/architecture.md section 8:
+# authoritative for the internal zone under {{ substrate_domain }} (answered from
+# a git/generated hosts-file zone with fallthrough), everything else forwarded to
+# public upstreams over DoT.
+#
+# COREDNS_TAILNET_IP is exported by the serve wrapper ({{ resolver_wrapper }}) at
+# start time (this node's tailnet IPv4). Combined with the literal loopback, the
+# resolver is reachable on the tailnet but never on a public interface. CoreDNS
+# env substitution yields a single token, so loopback is a literal here.
+
+{{ substrate_domain }}:{{ resolver_listen_port }} {
+    bind 127.0.0.1 {$COREDNS_TAILNET_IP}
+    # Internal names are answered from the hosts-format zone; a miss falls
+    # through to the forward below so public {{ substrate_domain }} names still
+    # resolve instead of NXDOMAIN'ing under our authority.
+    hosts {{ resolver_zone_file }} {{ substrate_domain }} {
+        fallthrough
+    }
+    forward . {{ resolver_forwarders | join(' ') }} {
+        tls_servername {{ resolver_forward_tls_servername }}
+    }
+    reload
+    log
+    errors
+}
+
+.:{{ resolver_listen_port }} {
+    bind 127.0.0.1 {$COREDNS_TAILNET_IP}
+    forward . {{ resolver_forwarders | join(' ') }} {
+        tls_servername {{ resolver_forward_tls_servername }}
+    }
+    reload
+    log
+    errors
+}

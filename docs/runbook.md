@@ -111,6 +111,32 @@ git fetch origin && git push origin origin/staging:main
 You never SSH in to deploy. Merging is deploying. To undo a bad change,
 `git revert` it on `staging` via PR — nodes converge back automatically.
 
+### Cut the fleet over to the internal resolver (CoreDNS)
+
+The `resolver` role installs CoreDNS on the core node and keeps
+`/etc/coredns/internal.zone` generated from headscale membership, but it is
+**inert until wired in** — nodes keep their default global resolvers. Making
+CoreDNS the fleet resolver (architecture.md §8) is a separate, deliberate change
+you make in git like any other:
+
+```sh
+# 1. Confirm CoreDNS is up on the core node and answering on its tailnet IP:
+incus exec staging-core --project substrate-staging -- systemctl is-active coredns
+dig @<core-tailnet-ipv4> web1.sbkt.co +short        # from a tailnet node
+# 2. In group_vars/all.yml, pin the core node's tailnet IPv4 and flip the gate:
+#      substrate_resolver_address: "<core-tailnet-ipv4>"
+#      substrate_resolver_wire_dns: true
+tests/run.sh && git commit -am "resolver: wire CoreDNS as the fleet resolver" && git push
+gh pr create --base staging
+```
+
+On merge, `roles/headscale` re-renders its config with CoreDNS as the sole global
+nameserver and `override_local_dns: true`; headscale pushes it to every enrolled
+node on its next poll. To roll back, `git revert` the change — nodes fall back to
+the default global resolvers automatically. Keep this OFF until CoreDNS has soaked
+on the core node: it becomes the singleton on the path for *every* lookup (§8
+*Resilience*).
+
 ## 2. Add a machine
 
 Rent the server, then paste this as cloud-init user-data (or run once

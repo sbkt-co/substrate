@@ -1,0 +1,25 @@
+#!/bin/sh
+{{ ansible_managed | comment }}
+# ExecStart for CoreDNS, run as the unprivileged {{ resolver_user }} user. Reads
+# the bind list that the privileged ExecStartPre ({{ resolver_bind_resolver }})
+# wrote to {{ resolver_bind_file }} (loopback + this node's tailnet IPv4) and
+# starts CoreDNS bound to exactly those addresses, so the resolver is reachable
+# on the tailnet but never on a public interface. Managed by roles/resolver.
+set -eu
+
+if [ ! -r "{{ resolver_bind_file }}" ]; then
+    echo "bind file {{ resolver_bind_file }} missing; ExecStartPre did not run (will retry)" >&2
+    exit 1
+fi
+
+# CoreDNS substitutes {$COREDNS_TAILNET_IP} in the Corefile with this value; the
+# bind plugin then listens on loopback (a literal in the Corefile) and this IP.
+# Env substitution does not split on whitespace, so exactly one address here.
+COREDNS_TAILNET_IP="$(cat {{ resolver_bind_file }})"
+export COREDNS_TAILNET_IP
+if [ -z "$COREDNS_TAILNET_IP" ]; then
+    echo "bind file {{ resolver_bind_file }} is empty (no tailnet IP yet); refusing to start" >&2
+    exit 1
+fi
+
+exec {{ resolver_bin }} -conf {{ resolver_corefile }}
