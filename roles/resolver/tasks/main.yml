@@ -86,7 +86,16 @@
     mode: "0640"
   notify: Restart coredns
 
-- name: Install the CoreDNS serve wrapper (resolves the tailnet bind IP at start)
+- name: Install the CoreDNS bind-resolver (privileged ExecStartPre; resolves the tailnet IP)
+  ansible.builtin.template:
+    src: coredns-bind.sh.j2
+    dest: "{{ resolver_bind_resolver }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart coredns
+
+- name: Install the CoreDNS serve wrapper (ExecStart; binds loopback + the tailnet IP)
   ansible.builtin.template:
     src: coredns-serve.sh.j2
     dest: "{{ resolver_wrapper }}"

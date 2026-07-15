@@ -40,6 +40,12 @@ resolver_config_dir: /etc/coredns
 resolver_corefile: "{{ resolver_config_dir }}/Corefile"
 resolver_zone_file: "{{ resolver_config_dir }}/internal.zone"
 resolver_wrapper: /usr/local/bin/coredns-serve.sh
+# Privileged ExecStartPre that resolves the tailnet IPv4 (as root) and the
+# runtime file it hands to the unprivileged ExecStart. resolver_bind_file lives
+# under a systemd RuntimeDirectory (/run/coredns) so it is recreated each start
+# and owned by the coredns user.
+resolver_bind_resolver: /usr/local/bin/coredns-bind.sh
+resolver_bind_file: /run/coredns/bind
 resolver_service_name: coredns
 
 # Upstream resolvers CoreDNS forwards non-internal queries to, over DoT. Var-

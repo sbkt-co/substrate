@@ -12,6 +12,16 @@ Wants=network-online.target tailscaled.service
 [Service]
 User={{ resolver_user }}
 Group={{ resolver_group }}
+# systemd creates {{ resolver_bind_file | dirname }} owned by {{ resolver_user }}
+# on each start and removes it on stop.
+RuntimeDirectory={{ resolver_bind_file | dirname | basename }}
+RuntimeDirectoryMode=0750
+# ExecStartPre runs with a leading '+', i.e. as root regardless of User=, so it
+# can read the tailscaled control socket to resolve this node's tailnet IPv4 (the
+# unprivileged coredns user cannot). It writes the bind list for ExecStart and
+# exits non-zero before the tailnet is up, so Restart=on-failure retries the unit
+# rather than binding CoreDNS to a public interface.
+ExecStartPre=+{{ resolver_bind_resolver }}
 ExecStart={{ resolver_wrapper }}
 # The reload plugin also polls the Corefile/zone, but SIGUSR1 forces an immediate
 # reload of the generated zone without dropping the listener.
