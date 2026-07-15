@@ -504,14 +504,23 @@ wildcard scope matter for blast radius.
 
 - **Built today:** headscale MagicDNS under `net.sbkt.co`; wildcard `*.net.sbkt.co`
   issued by `cert_issuer` and fetched by `cert_client` nodes over the tailnet
-  (§7 TLS). Internal names are `<host>.net.sbkt.co`.
-- **Target (this design):** neutral naming under `sbkt.co` (no `.net.` label); a new
-  `resolver` singleton role running CoreDNS, authoritative for the git-managed
-  internal zone and reached via headscale split-DNS for full record types; wildcard
-  `*.sbkt.co`; the wildcard key confined to the public edge. Migration is a rename of
-  the tailnet base domain, the new `resolver` role, and reissuing the wildcard at the
-  apex; the `host_vars` references to `*.net.sbkt.co` names move to the neutral zone
-  in the same change.
+  (§7 TLS). Internal names are `<host>.net.sbkt.co`. The **`resolver` role now
+  exists** — it installs CoreDNS on the core node (version-pinned binary, systemd
+  unit binding loopback + the tailnet IPv4), renders the Corefile above, and
+  generates `/etc/coredns/internal.zone` from `headscale nodes list` on every
+  reconcile (skipping loudly, leaving any prior zone in place, when the headscale
+  CLI is absent or not yet answering). It is **not yet on the resolution path**:
+  the headscale wiring is gated behind `substrate_resolver_wire_dns` (default
+  `false`), so a node's DNS still points at the default global resolvers until the
+  fleet is explicitly cut over.
+- **Target (this design):** neutral naming under `sbkt.co` (no `.net.` label); the
+  `resolver` singleton **wired in** — `substrate_resolver_wire_dns: true` with
+  `substrate_resolver_address` pinned to the core node's tailnet IPv4, so headscale
+  points every node at CoreDNS with `override_local_dns` (split-DNS for full record
+  types); wildcard `*.sbkt.co`; the wildcard key confined to the public edge.
+  Remaining migration is a rename of the tailnet base domain, flipping the wiring
+  var, and reissuing the wildcard at the apex; the `host_vars` references to
+  `*.net.sbkt.co` names move to the neutral zone in the same change.
 
 ---
 
@@ -626,6 +635,7 @@ This is not aspirational — it matches every role in the repo today:
 | certbot (issuer) | CLI run one-shot with a deploy hook by the role          | no         |
 | cert serve       | python3 http.server under a `substrate-certs` systemd unit | no       |
 | dns              | `community.general` cloudflare module, no daemon         | no         |
+| resolver         | version-pinned CoreDNS binary, `coredns` systemd service | no         |
 | reconciler       | `ansible-pull` via a systemd oneshot + timer             | no         |
 
 No production role installs Docker, podman, or any container runtime. Docker

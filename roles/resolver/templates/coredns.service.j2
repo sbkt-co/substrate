@@ -1,0 +1,46 @@
+{{ ansible_managed | comment }}
+# Managed by roles/resolver. Runs CoreDNS as the fleet's internal resolver, bound
+# to loopback + the tailnet IPv4 (resolved at start by the serve wrapper). Binds
+# :53 as an unprivileged user via cap_net_bind_service; if the tailnet IP is not
+# up yet the wrapper exits non-zero and Restart=on-failure retries.
+[Unit]
+Description=CoreDNS internal resolver (tailnet + loopback)
+Documentation=https://coredns.io
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+User={{ resolver_user }}
+Group={{ resolver_group }}
+# systemd creates {{ resolver_bind_file | dirname }} owned by {{ resolver_user }}
+# on each start and removes it on stop.
+RuntimeDirectory={{ resolver_bind_file | dirname | basename }}
+RuntimeDirectoryMode=0750
+# ExecStartPre runs with a leading '+', i.e. as root regardless of User=, so it
+# can read the tailscaled control socket to resolve this node's tailnet IPv4 (the
+# unprivileged coredns user cannot). It writes the bind list for ExecStart and
+# exits non-zero before the tailnet is up, so Restart=on-failure retries the unit
+# rather than binding CoreDNS to a public interface.
+ExecStartPre=+{{ resolver_bind_resolver }}
+ExecStart={{ resolver_wrapper }}
+# The reload plugin also polls the Corefile/zone, but SIGUSR1 forces an immediate
+# reload of the generated zone without dropping the listener.
+ExecReload=/bin/kill -USR1 $MAINPID
+Restart=on-failure
+RestartSec=5
+
+# Bind :53 as non-root: grant only the port-binding capability, nothing else.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Baseline hardening. ProtectSystem=strict makes the whole filesystem read-only
+# except the paths CoreDNS legitimately needs to read (config) — it writes
+# nothing at runtime, so no ReadWritePaths are required.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths={{ resolver_config_dir }}
+
+[Install]
+WantedBy=multi-user.target
