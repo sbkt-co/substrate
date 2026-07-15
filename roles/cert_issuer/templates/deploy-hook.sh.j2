@@ -4,6 +4,6 @@
 # the live cert into the tailnet-servable directory. Managed by roles/cert_issuer.
 set -eu
 
-install -d -m 0755 "{{ cert_issuer_serve_dir }}"
-install -m 0644 "{{ cert_issuer_live_dir }}/fullchain.pem" "{{ cert_issuer_serve_dir }}/fullchain.pem"
-install -m 0600 "{{ cert_issuer_live_dir }}/privkey.pem" "{{ cert_issuer_serve_dir }}/privkey.pem"
+install -d -m 0750 -g "{{ cert_issuer_serve_group }}" "{{ cert_issuer_serve_dir }}"
+install -m 0644 -g "{{ cert_issuer_serve_group }}" "{{ cert_issuer_live_dir }}/fullchain.pem" "{{ cert_issuer_serve_dir }}/fullchain.pem"
+install -m 0640 -g "{{ cert_issuer_serve_group }}" "{{ cert_issuer_live_dir }}/privkey.pem" "{{ cert_issuer_serve_dir }}/privkey.pem"
