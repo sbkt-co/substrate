@@ -15,6 +15,20 @@
     group: root
     mode: "0755"
 
+# Created here, in the base layer, so it exists with the right mode BEFORE any
+# role puts state under it. Ansible's file module applies the requested mode to
+# parent directories it has to create, so without this the first role to create
+# a child (reconciler, with a 0750 checkout dir) would silently leave the shared
+# parent 0750 root:root — locking the unprivileged cert server out of certs/.
+# See substrate_var_dir in group_vars/all.yml for the full contract.
+- name: Ensure the shared substrate state directory exists and stays traversable
+  ansible.builtin.file:
+    path: "{{ substrate_var_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Record node identity and applied role layers
   ansible.builtin.copy:
     dest: "{{ common_state_dir }}/node.yml"

@@ -30,14 +30,23 @@
   check_mode: false
   when: cert_client_issuer_host | length > 0
 
-- name: Warn and skip when the tailnet cert issuer is unreachable
+- name: Warn and skip when the tailnet cert issuer is not serving
   ansible.builtin.debug:
     msg: >-
-      Cert fetch SKIPPED on {{ inventory_hostname }}: issuer
-      http://{{ cert_client_issuer_host }}:{{ cert_client_serve_port }}/ is
-      unreachable (status {{ cert_client_fullchain.status | default('n/a') }}).
-      The tailnet may be down or the issuer not serving yet — the next reconcile
-      will retry.
+      Cert fetch SKIPPED on {{ inventory_hostname }}:
+      http://{{ cert_client_issuer_host }}:{{ cert_client_serve_port }}/fullchain.pem
+      returned {{ cert_client_fullchain.status | default('no response') }}.
+      {% if cert_client_fullchain.status | default(-1) == 404 %}
+      The issuer is REACHABLE but is not serving the wildcard cert. Either no
+      cert has been issued there yet, or the cert server cannot read its own
+      serve directory — python's http.server reports a permission error as a
+      404, so check on the issuer that /var/lib/substrate is 0755 and that
+      certs/ is 0750 root:certserve.
+      {% else %}
+      The issuer did not respond at all — the tailnet may be down or
+      substrate-certs may not be running on it.
+      {% endif %}
+      The next reconcile will retry.
   when:
     - cert_client_issuer_host | length > 0
     - cert_client_fullchain.status | default(-1) != 200

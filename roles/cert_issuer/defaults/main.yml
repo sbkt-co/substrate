@@ -15,7 +15,10 @@ cert_issuer_name: "{{ substrate_tailnet_domain }}"
 cert_issuer_live_dir: "/etc/letsencrypt/live/{{ substrate_tailnet_domain }}"
 
 # Servable copy of the live cert, exposed to tailnet peers by the cert server.
-cert_issuer_serve_dir: /var/lib/substrate/certs
+# Lives under the shared state dir, whose 0755 mode is load-bearing: the cert
+# server runs unprivileged (DynamicUser + certserve group) and needs +x on every
+# parent to reach this directory. See substrate_var_dir in group_vars/all.yml.
+cert_issuer_serve_dir: "{{ substrate_var_dir }}/certs"
 cert_issuer_serve_port: 8444
 cert_issuer_server_wrapper: /usr/local/bin/substrate-certs-serve.sh
 cert_issuer_deploy_hook: /usr/local/bin/substrate-cert-deploy-hook.sh

@@ -273,6 +273,15 @@ What this means in practice:
   `certserve` supplementary group. The private key in the serve directory is
   mode `0640 root:certserve`; the process has no elevated privileges, a minimal
   capability set, and no write access to the filesystem.
+- **Traversal is part of the contract.** Because the server is unprivileged and
+  is not in group `root`, it needs `+x` on *every* parent of the serve directory,
+  not just group access on the directory itself. `/var/lib/substrate`
+  (`substrate_var_dir`) is therefore created `0755` by `roles/common`;
+  confidentiality lives at the leaves (`certs/` is `0750 root:certserve`).
+  Tightening that shared parent to `0750 root:root` locks the server out, and
+  python's `http.server` reports the resulting `EACCES` as a **404** — which
+  looks exactly like "no cert issued yet" in the client's skip message. The
+  Incus verify suite asserts this access as an unprivileged `certserve` member.
 
 ## Rotation
 

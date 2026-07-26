@@ -268,6 +268,48 @@
           substrate-certs ActiveState is {{ verify_certs_svc.status.ActiveState }},
           but no cert should have been issued/served in CI
 
+    # The cert server runs as an unprivileged DynamicUser in the certserve group,
+    # so it needs +x on EVERY parent of the serve dir. A 0750 root:root
+    # /var/lib/substrate silently locks it out, and python's http.server reports
+    # the resulting EACCES as a 404 — indistinguishable from "no cert issued yet"
+    # in the client's skip message. Reproduce the exact access the server makes,
+    # which needs no issued cert and so runs in CI where issuance is skipped.
+    - name: Probe the serve dir as an unprivileged certserve member (what the server does)
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - nobody
+          - -g
+          - certserve
+          - --
+          - /usr/bin/env
+          - ls
+          - -A
+          - /var/lib/substrate/certs
+      register: verify_certs_serve_access
+      changed_when: false
+      failed_when: false
+
+    - name: Stat the shared state dir that must stay traversable
+      ansible.builtin.stat:
+        path: /var/lib/substrate
+      register: verify_var_dir
+
+    - name: Assert the serve dir is reachable by the unprivileged cert server
+      ansible.builtin.assert:
+        that:
+          - verify_certs_serve_access.rc == 0
+          - verify_var_dir.stat.mode == '0755'
+        fail_msg: >-
+          The cert server could not reach its own serve directory:
+          /var/lib/substrate is mode {{ verify_var_dir.stat.mode | default('n/a') }}
+          (must be 0755 — every parent needs +x for the unprivileged DynamicUser),
+          unprivileged probe rc={{ verify_certs_serve_access.rc }}
+          stderr={{ verify_certs_serve_access.stderr | default('') }}.
+          Serving would return 404 for every fetch. See substrate_var_dir in
+          group_vars/all.yml.
+
 
     # ------------------------------------------------------------------
     # cert_client: dest dir created, but fetch SKIPPED (no issuer host) — so
