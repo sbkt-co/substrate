@@ -16,6 +16,11 @@ node_roles:
 # Reconcile fast so drift and bad promotions surface quickly on staging.
 substrate_reconcile_interval: "5min"
 substrate_reconcile_splay: "30s"
+# Keep the reconciler's start timeout BELOW the interval above. The unit's
+# own guard assumes timeout < interval so a hung ansible-pull is killed before
+# the next fire; the role default (10min) is sized for the fleet-wide 15min
+# cadence and would exceed the 5min used here, silently removing that margin.
+reconciler_timeout_start_sec: "4min"
 
 # Headscale coordination server URL as reached by clients within the staging
 # fleet. Points at the staging-core container over the Incus-provided DNS name.
