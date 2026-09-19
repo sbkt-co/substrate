@@ -8,6 +8,19 @@
     name: ansible
     state: present
 
+# Standalone-safety: the 0750 checkout below sits under the shared state dir, and
+# Ansible would stamp its 0750 onto that parent if it had to create it — which
+# would lock unprivileged service users (the cert server) out of their own
+# subdirectory. roles/common creates it first in the normal ordering; declaring
+# it here too keeps the reconciler correct on its own. See substrate_var_dir.
+- name: Ensure the shared substrate state directory exists and stays traversable
+  ansible.builtin.file:
+    path: "{{ substrate_var_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Ensure reconciler checkout directory exists
   ansible.builtin.file:
     path: "{{ reconciler_workdir }}"

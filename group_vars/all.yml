@@ -32,6 +32,21 @@ node_roles: []
 # skip with a loud warning rather than failing the whole converge.
 substrate_secrets_dir: /etc/substrate/secrets
 
+# Shared node-local state directory: parent of the reconciler's checkout
+# (repo/) and the cert issuer's servable cert copy (certs/). Declared fleet-wide
+# because more than one role puts state under it, and because its MODE is a
+# cross-role contract, not a role-local detail.
+#
+# LOAD-BEARING: roles/common creates this directory 0755 so it is TRAVERSABLE by
+# unprivileged service users. substrate-certs.service runs as a DynamicUser in
+# the `certserve` group; it is not root and not in group root, so a 0750
+# root:root parent denies it the +x needed to open certs/ underneath — and
+# python's http.server reports that EACCES as a plain 404, which reads like a
+# missing file rather than a permission problem. Confidentiality is enforced at
+# the leaves (certs/ is 0750 root:certserve, privkey.pem 0640, repo/ 0750), not
+# by making this shared parent unreadable. Do not tighten this to 0750.
+substrate_var_dir: /var/lib/substrate
+
 # SOPS-encrypted secret distribution (node-held keys). This manifest is the
 # committed spec that drives roles/common's decrypt loop: each entry names a
 # ciphertext file committed under secrets/ (encrypted to the age public keys
