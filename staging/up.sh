@@ -59,10 +59,23 @@ if ! ansible-galaxy collection list community.general >/dev/null 2>&1; then
     exit 1
 fi
 
+# Incus must be reachable. On macOS the daemon lives in a colima VM that does
+# NOT start at login, so an unreachable daemon there usually just means the VM
+# is stopped — start it rather than making the operator do it by hand. Guarded
+# to the colima case: on Linux/CI the daemon is local and a failure here is a
+# real problem, so keep the original error instead of invoking a tool that is
+# not the mechanism on that host.
 if ! incus info >/dev/null 2>&1; then
-    echo "incus is not reachable. On macOS, start it alongside Docker with:" >&2
-    echo "  tests/incus/colima-up.sh" >&2
-    exit 1
+    if [ "$(uname -s)" = "Darwin" ] && command -v colima >/dev/null 2>&1; then
+        profile="${SUBSTRATE_COLIMA_PROFILE:-incus}"
+        warn "incus is not reachable; starting colima profile '${profile}'..."
+        colima start "$profile" || true
+    fi
+    if ! incus info >/dev/null 2>&1; then
+        echo "incus is not reachable. On macOS, start it alongside Docker with:" >&2
+        echo "  tests/incus/colima-up.sh" >&2
+        exit 1
+    fi
 fi
 
 # Drive incus/ansible against whatever the default remote is: `local` on a Linux
