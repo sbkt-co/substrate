@@ -99,8 +99,34 @@ substrate_resolver_address: ""
 # and retries on the next reconcile — set the URL and re-converge the core first.
 substrate_headscale_url: ""
 
-# ACME: use the Let's Encrypt STAGING endpoint until the setup is trusted —
-# untrusted certs, but no rate-limit exposure while iterating. Flip to false
-# for real certs.
-substrate_acme_staging: true
+# ACME endpoint, derived from the environment the NODE itself is seeded for.
+#
+# Production (nodes tracking `main`) issues real, browser-trusted certificates.
+# Every other environment uses the Let's Encrypt STAGING endpoint: untrusted
+# certs, no production rate-limit exposure, and nothing published to the CT
+# logs browsers rely on.
+#
+# Why derived and not a plain boolean: staging -> main is fast-forward only, so
+# the two branches cannot hold different values for a committed var (see
+# CONTRIBUTING.md — "never commit env-specific differences that exist on one
+# branch but not the other"). A static `true` would leave production on test
+# certs; a static `false` would make staging issue REAL certs for the same
+# *.{{ substrate_tailnet_domain }} name production uses, contending for the
+# duplicate-certificate rate limit and publishing staging activity to CT.
+# Deriving from substrate_branch keeps this file byte-identical on both
+# branches while letting each node resolve it from its own
+# /etc/substrate/branch seed — the same signal that already selects its roles.
+#
+# Unseeded nodes: bootstrap.sh always writes the seed (defaulting to main), so
+# this only arises in the test harness, which resolves to the production
+# endpoint but holds no Cloudflare credentials — cert_issuer takes its
+# documented skip-loudly path and never reaches an ACME server.
+#
+# Consequence worth knowing: a production node is BORN on main and issues from
+# the real endpoint with no prior lineage, so it never performs a
+# staging->trusted switch. That matters because certbot runs with
+# --keep-until-expiring (correctly — it runs on every 5-minute reconcile and
+# must not re-request a cert that is still valid), and a change of ACME server
+# is not among the conditions it weighs when deciding to reissue.
+substrate_acme_staging: "{{ substrate_branch != 'main' }}"
 substrate_acme_email: "hostmaster@sbkt.co"
