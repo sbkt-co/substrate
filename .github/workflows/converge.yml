@@ -1,0 +1,109 @@
+---
+name: converge
+
+# Managed by substrate. Reusable converge job, called by ci.yml (PR/push) and
+# converge-weekly.yml (schedule).
+#
+# It lives in its own file so that the SCHEDULE trigger is not attached to the
+# workflow that gates pull requests. GitHub disables workflows containing a
+# `schedule:` trigger after ~60 days of repository inactivity; when that
+# happened to ci.yml, its `validate` and `changes` checks stopped reporting and
+# every PR into staging deadlocked against the branch ruleset that requires
+# them. Keeping the cron in a separate file means that if GitHub ever disables
+# it again, only the weekly runner-health check goes quiet -- PR gating keeps
+# working.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to check out and converge.
+        required: false
+        type: string
+        default: ${{ github.ref }}
+
+jobs:
+  converge:
+    runs-on: [self-hosted, linux, incus]
+    # Bound the wall clock so an offline/absent self-hosted runner turns into a
+    # visibly failed (timed-out) run instead of a job queued forever in silence —
+    # the whole point of the weekly schedule is to surface runner death.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # `schedule` runs on the default branch; pin the checkout to staging so
+          # the weekly converge always exercises the staging tree (the PR target).
+          ref: ${{ inputs.ref }}
+
+      # Only needed on github-hosted runners, which have no Incus and whose
+      # Docker install sets the iptables FORWARD policy to DROP (blocking the
+      # Incus bridge's NAT). The self-hosted Incus host already has all this.
+      - name: Install Incus
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://pkgs.zabbly.com/key.asc | sudo tee /etc/apt/keyrings/zabbly.asc >/dev/null
+          codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          arch="$(dpkg --print-architecture)"
+          sudo tee /etc/apt/sources.list.d/zabbly-incus-stable.sources >/dev/null <<EOF
+          Enabled: yes
+          Types: deb
+          URIs: https://pkgs.zabbly.com/incus/stable
+          Suites: ${codename}
+          Components: main
+          Architectures: ${arch}
+          Signed-By: /etc/apt/keyrings/zabbly.asc
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y incus
+          sudo incus admin init --minimal
+          sudo sysctl -w net.ipv4.ip_forward=1
+          sudo iptables -P FORWARD ACCEPT
+          sudo usermod -aG incus-admin "$USER"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.8.22"
+          enable-cache: true
+
+      # Galaxy collections are version-pinned in requirements.yml, so key the
+      # cache on its hash — a bump invalidates, a hit is a fast no-op install.
+      - name: Cache Ansible collections
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.ansible/collections
+          key: galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+
+      - name: Install Ansible + collections
+        run: |
+          uv tool install "ansible-core==2.18.6"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          ansible-galaxy collection install -r requirements.yml
+
+      # Derive the cache key from prebake.sh itself: the fingerprint hashes the
+      # pinned base image id + the prereq package list, so editing either rolls
+      # the key automatically. No more manual `-v1` suffix to remember to bump —
+      # and prebake.sh applies the SAME fingerprint (plus a max-age rebake) to the
+      # persistent self-hosted image, so both the tarball cache and the local
+      # alias refresh in lockstep with the content that defines the image.
+      - name: Compute prebake fingerprint
+        id: prebake
+        run: echo "fingerprint=$(tests/incus/prebake.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+
+      # Prebake (base node image + python3/sudo) cached as a tarball, so the
+      # converge test skips the in-container apt entirely on a cache hit. On a
+      # self-hosted runner the image persists in Incus and is reused directly.
+      - name: Cache prebaked node image
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: /tmp/incus-image
+          key: incus-node-trixie-${{ steps.prebake.outputs.fingerprint }}
+
+      - name: Prepare prebaked node image
+        run: sg incus-admin -c 'tests/incus/prebake.sh'
+
+      - name: Real converge + idempotence + drift repair (Incus)
+        run: sg incus-admin -c 'tests/incus/run.sh'

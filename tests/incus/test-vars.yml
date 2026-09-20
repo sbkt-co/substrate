@@ -33,6 +33,18 @@
 #                  list` for real. Fleet DNS wiring stays OFF (the gated var
 #                  defaults false), so headscale's config is unchanged.
 # ----------------------------------------------------------------------
+# Keep the node's own reconciler from firing DURING the test. The role
+# installs a live timer (correctly -- verify.yml asserts it is active, and the
+# drift phase deletes and restores it), and substrate_reconcile_on_boot_sec
+# defaults to 5min fleet-wide. The converge + idempotence + drift phases take
+# roughly that long, so the timer can fire mid-run, ansible-pull the tracked
+# branch, and resolve node_roles from a host_vars file that does not exist for
+# this container -- rewriting node.yml with roles: [] and failing verify with
+# "branch=staging, roles=[]". The timer still gets installed and asserted; it
+# simply cannot reach its first firing inside the test window.
+substrate_reconcile_on_boot_sec: "60min"
+substrate_reconcile_interval: "60min"
+
 node_roles:
   - headscale
   - tailnet
