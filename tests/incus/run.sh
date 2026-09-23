@@ -198,12 +198,18 @@ assert got == want, f\"fixture round-trip mismatch: {got!r} != {want!r}\"
 '
 
 converge() { ansible-playbook -i "$INVENTORY" tests/incus/converge.yml "$@"; }
+converge_role() {
+    local role="$1"
+    shift
+    ansible-playbook -i "$INVENTORY" tests/incus/converge-role.yml \
+        --extra-vars "incus_test_role=$role" "$@"
+}
 
-assert_converge_idempotent() {
+assert_play_idempotent() {
     local label="$1"
     shift
     local output rc
-    if output="$(converge "$@" 2>&1)"; then
+    if output="$("$@" 2>&1)"; then
         printf '%s\n' "$output" >&2
     else
         rc=$?
@@ -281,7 +287,7 @@ fi
 headscale_before_wiring="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
 
 step "converge once more so headscale wires split DNS"
-converge
+converge_role headscale
 resolver_address="$(incus_in exec "$CONTAINER" -- tailscale ip -4 | tr -d '[:space:]')"
 cached_address="$(incus_in exec "$CONTAINER" -- cat /var/lib/substrate/resolver-address | tr -d '[:space:]')"
 [ "$cached_address" = "$resolver_address" ] || {
@@ -297,7 +303,7 @@ headscale_after_wiring="$(incus_in exec "$CONTAINER" -- systemctl show headscale
 }
 
 step "assert idempotence does not restart headscale"
-assert_converge_idempotent "full re-converge"
+assert_play_idempotent "full re-converge" converge
 echo "idempotent."
 headscale_after_idempotence="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
 [ "$headscale_after_idempotence" = "$headscale_after_wiring" ] || {
@@ -312,17 +318,36 @@ coredns_before_zone_reload="$(incus_in exec "$CONTAINER" -- systemctl show cored
 # in the Tailscale/MagicDNS path and could hide a successful CoreDNS file reload.
 # Each harness run starts from a fresh container whose initial fixture has only
 # the control record, so the post-update lookup still proves the new record loaded.
-converge --extra-vars '{"resolver_service_records":[{"name":"control","type":"CNAME","value":"substrate-test.net.sbkt.co."},{"name":"reload-probe","type":"CNAME","value":"substrate-test.net.sbkt.co."}]}'
-zone_reload_ready=false
+converge_role resolver --extra-vars '{"resolver_service_records":[{"name":"control","type":"CNAME","value":"substrate-test.net.sbkt.co."},{"name":"reload-probe","type":"CNAME","value":"substrate-test.net.sbkt.co."}]}'
+# Wait for a file-plugin scan that happened after convergence completed. Querying
+# sooner can cache NXDOMAIN in Tailscale and hide the successful reload from every
+# subsequent retry.
+reload_after="$(incus_in exec "$CONTAINER" -- date +%s)"
+reload_after="$((reload_after + 1))"
+zone_reload_seen=false
 for _ in $(seq 1 10); do
-    if incus_in exec "$CONTAINER" -- getent ahostsv4 reload-probe.svc.sbkt.co 2>/dev/null | grep -q "$resolver_address"; then
-        zone_reload_ready=true
+    if incus_in exec "$CONTAINER" -- journalctl -u coredns --since "@$reload_after" --no-pager 2>/dev/null \
+        | grep -q 'plugin/file: Successfully reloaded zone'; then
+        zone_reload_seen=true
         break
     fi
     sleep 1
 done
+[ "$zone_reload_seen" = true ] || {
+    echo "CoreDNS did not scan the records-only zone update after convergence" >&2
+    incus_in exec "$CONTAINER" -- journalctl -u coredns --no-pager -n 80 >&2 || true
+    exit 1
+}
+zone_reload_ready=false
+if incus_in exec "$CONTAINER" -- getent ahostsv4 reload-probe.svc.sbkt.co 2>/dev/null | grep -q "$resolver_address"; then
+    zone_reload_ready=true
+fi
 [ "$zone_reload_ready" = true ] || {
     echo "CoreDNS did not serve the records-only zone update after convergence" >&2
+    incus_in exec "$CONTAINER" -- cat /etc/coredns/internal.zone >&2 || true
+    incus_in exec "$CONTAINER" -- systemctl status coredns --no-pager >&2 || true
+    incus_in exec "$CONTAINER" -- journalctl -u coredns --no-pager -n 80 >&2 || true
+    incus_in exec "$CONTAINER" -- tailscale dns status >&2 || true
     exit 1
 }
 coredns_after_zone_reload="$(incus_in exec "$CONTAINER" -- systemctl show coredns -p InvocationID --value | tr -d '[:space:]')"
@@ -338,7 +363,7 @@ assert_lkg_unchanged() {
     cache_before="$(incus_in exec "$CONTAINER" -- sha256sum /var/lib/substrate/resolver-address | awk '{print $1}')"
     config_before="$(incus_in exec "$CONTAINER" -- sha256sum /etc/headscale/config.yaml | awk '{print $1}')"
     invocation_before="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
-    assert_converge_idempotent "$label discovery rejection" "$@"
+    assert_play_idempotent "$label discovery rejection" converge_role headscale "$@"
     cache_after="$(incus_in exec "$CONTAINER" -- sha256sum /var/lib/substrate/resolver-address | awk '{print $1}')"
     config_after="$(incus_in exec "$CONTAINER" -- sha256sum /etc/headscale/config.yaml | awk '{print $1}')"
     invocation_after="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
@@ -353,7 +378,7 @@ changed_resolver_address=100.127.255.254
 printf '%s' '[{"given_name":"substrate-test","ip_addresses":["100.127.255.254"]}]' | \
     incus_in exec "$CONTAINER" -- sh -c 'cat > /tmp/substrate-resolver-nodes.json && chmod 0644 /tmp/substrate-resolver-nodes.json'
 invocation_before_changed_address="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
-converge --extra-vars '{"headscale_nodes_list_argv":["/bin/cat","/tmp/substrate-resolver-nodes.json"]}'
+converge_role headscale --extra-vars '{"headscale_nodes_list_argv":["/bin/cat","/tmp/substrate-resolver-nodes.json"]}'
 [ "$(incus_in exec "$CONTAINER" -- cat /var/lib/substrate/resolver-address | tr -d '[:space:]')" = "$changed_resolver_address" ]
 incus_in exec "$CONTAINER" -- grep -Eq "^[[:space:]]+- $changed_resolver_address$" /etc/headscale/config.yaml
 invocation_after_changed_address="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
@@ -363,7 +388,7 @@ invocation_after_changed_address="$(incus_in exec "$CONTAINER" -- systemctl show
 }
 
 step "restore the actual discovered resolver address"
-converge
+converge_role headscale
 [ "$(incus_in exec "$CONTAINER" -- cat /var/lib/substrate/resolver-address | tr -d '[:space:]')" = "$resolver_address" ]
 incus_in exec "$CONTAINER" -- grep -Eq "^[[:space:]]+- $resolver_address$" /etc/headscale/config.yaml
 
@@ -382,7 +407,7 @@ assert_lkg_unchanged malformed-json \
 
 step "withdraw split DNS when the resolver role is removed"
 headscale_before_withdrawal="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
-converge --extra-vars '{"node_roles":["headscale","tailnet","dns","cert_issuer","cert_client"]}'
+converge_role headscale --extra-vars '{"node_roles":["headscale","tailnet","dns","cert_issuer","cert_client"]}'
 incus_in exec "$CONTAINER" -- test ! -e /var/lib/substrate/resolver-address
 if incus_in exec "$CONTAINER" -- grep -Eq '^[[:space:]]+svc\.sbkt\.co:' /etc/headscale/config.yaml; then
     echo "Headscale retained the svc.sbkt.co split route after resolver-role removal" >&2
@@ -395,7 +420,7 @@ headscale_after_withdrawal="$(incus_in exec "$CONTAINER" -- systemctl show heads
 }
 
 step "restore the resolver role and split DNS route"
-converge
+converge_role headscale
 [ "$(incus_in exec "$CONTAINER" -- cat /var/lib/substrate/resolver-address | tr -d '[:space:]')" = "$resolver_address" ]
 incus_in exec "$CONTAINER" -- grep -Eq '^[[:space:]]+svc\.sbkt\.co:' /etc/headscale/config.yaml
 incus_in exec "$CONTAINER" -- grep -Eq "^[[:space:]]+- $resolver_address$" /etc/headscale/config.yaml
