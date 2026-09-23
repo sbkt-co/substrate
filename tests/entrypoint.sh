@@ -19,6 +19,10 @@ run() {
     "$@"
 }
 
+run "DNS architecture contract" python3 tests/dns_contract_test.py
+run "DNS public-zone privacy guard" python3 tests/dns_privacy_guard_test.py
+run "Headscale resolver-address selection" python3 tests/headscale_resolver_address_test.py
+run "Resolver service-record validation" python3 tests/resolver_service_records_test.py
 run "yamllint"          yamllint .
 run "ansible-lint"      ansible-lint
 run "syntax-check"      ansible-playbook --syntax-check local.yml

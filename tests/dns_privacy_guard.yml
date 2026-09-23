@@ -1,0 +1,10 @@
+---
+- name: Exercise the public DNS privacy guard
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run only the unconditional DNS namespace guard
+      ansible.builtin.include_role:
+        name: dns
+        tasks_from: privacy_guard.yml

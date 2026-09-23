@@ -1,0 +1,21 @@
+---
+- name: Converge one substrate role (Incus system container)
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../../group_vars/all.yml
+    - test-vars.yml
+
+  pre_tasks:
+    - name: Require an explicitly supported focused role
+      ansible.builtin.assert:
+        that:
+          - incus_test_role in ['headscale', 'resolver']
+        fail_msg: "incus_test_role must be headscale or resolver"
+
+  tasks:
+    - name: Apply the focused differentiation role
+      ansible.builtin.include_role:
+        name: "{{ incus_test_role }}"

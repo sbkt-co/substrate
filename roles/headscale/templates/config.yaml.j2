@@ -45,26 +45,21 @@ log:
   format: text
   level: info
 
-# MagicDNS: every node resolves <hostname>.{{ substrate_tailnet_domain }}.
-# Non-tailnet queries go to the global resolvers. When the fleet DNS wiring is
-# enabled (substrate_resolver_wire_dns, default off in roles/resolver) AND the
-# resolver's tailnet address is pinned, point every node at CoreDNS instead and
-# override any node-local resolver — this is the section 8 wiring that makes
-# CoreDNS the fleet resolver. Default-off so merging the resolver role is inert.
+# MagicDNS owns node names under {{ substrate_tailnet_domain }}. Ordinary DNS
+# keeps the configured global resolvers; only the disjoint service suffix is
+# routed to the validated, last-known-good CoreDNS address.
 dns:
   magic_dns: true
   base_domain: {{ substrate_tailnet_domain }}
   nameservers:
     global:
-{% if substrate_resolver_wire_dns | default(false) and (substrate_resolver_address | default('')) | length > 0 %}
-      - {{ substrate_resolver_address }}
-{% else %}
 {% for ns in headscale_global_nameservers %}
       - {{ ns }}
 {% endfor %}
-{% endif %}
-{% if substrate_resolver_wire_dns | default(false) and (substrate_resolver_address | default('')) | length > 0 %}
-  override_local_dns: true
+{% if (headscale_effective_resolver_address | default('')) | length > 0 %}
+    split:
+      {{ substrate_service_domain }}:
+        - {{ headscale_effective_resolver_address }}
 {% endif %}
   search_domains: []
 

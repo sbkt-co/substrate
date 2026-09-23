@@ -2,9 +2,9 @@
 #
 # Bring up (and converge) the PERSISTENT local staging fleet in a dedicated Incus
 # project. Two long-lived Debian trixie system containers (systemd as PID 1 —
-# faithful stands-in for real nodes) model the tailnet + certificate topology:
+# faithful stands-in for real nodes) model tailnet, split-DNS, and certificate flows:
 #
-#   staging-core  headscale coordination server + tailnet member + cert issuer
+#   staging-core  headscale + tailnet + CoreDNS service resolver + cert issuer
 #   staging-web1  tailnet member + cert client (fetches the wildcard cert)
 #
 # Unlike tests/incus/run.sh (ephemeral, torn down on exit), these instances are
@@ -96,6 +96,57 @@ is_managed() {
     incus_in config get "$1" user.substrate-managed 2>/dev/null | grep -qx true
 }
 
+# Direct convergence applies the current working tree, while each persistent
+# node's timer pulls the committed staging branch. Pause that independent writer
+# for the duration or it can overwrite files midway through this harness. The
+# reconciler role starts the timer during every play, so converge() stops it again
+# immediately afterward. Always restore normal pull-based operation on exit.
+reconcilers_paused=false
+pause_reconcilers() {
+    local name
+    # Mark cleanup required before the first mutation so a mid-loop failure still
+    # restores every managed instance already touched.
+    reconcilers_paused=true
+    for name in "${INSTANCES[@]}"; do
+        if is_managed "$name"; then
+            incus_in exec "$name" -- sh -c '
+                systemctl stop substrate-reconcile.timer substrate-reconcile.service >/dev/null 2>&1 || true
+                mkdir -p /run/systemd/system/substrate-reconcile.timer.d
+                cat > /run/systemd/system/substrate-reconcile.timer.d/staging-harness.conf <<EOF
+[Timer]
+OnBootSec=
+OnUnitInactiveSec=
+OnUnitInactiveSec=1d
+EOF
+                systemctl daemon-reload
+                systemctl start substrate-reconcile.timer >/dev/null 2>&1 || true
+            '
+        fi
+    done
+}
+resume_reconcilers() {
+    local name
+    if [ "$reconcilers_paused" != true ]; then
+        return
+    fi
+    for name in "${INSTANCES[@]}"; do
+        if is_managed "$name"; then
+            incus_in exec "$name" -- sh -c '
+                systemctl stop substrate-reconcile.timer >/dev/null 2>&1 || true
+                rm -f /run/systemd/system/substrate-reconcile.timer.d/staging-harness.conf
+                systemctl daemon-reload
+                systemctl stop substrate-reconcile-resume.timer substrate-reconcile-resume.service >/dev/null 2>&1 || true
+                systemctl reset-failed substrate-reconcile-resume.timer substrate-reconcile-resume.service >/dev/null 2>&1 || true
+                if systemctl cat substrate-reconcile.timer >/dev/null 2>&1; then
+                    systemd-run --quiet --unit=substrate-reconcile-resume --on-active=5min \
+                        /bin/systemctl start substrate-reconcile.timer
+                fi
+            ' >/dev/null 2>&1 || warn "failed to schedule substrate-reconcile.timer resume on $name"
+        fi
+    done
+}
+trap resume_reconcilers EXIT
+
 # Dedicated project for isolation. features.profiles/images=false share the
 # host's default profile (network + storage) and image cache, so the project is
 # an instance namespace only — no separate network/storage to provision (same
@@ -172,6 +223,9 @@ for name in "${INSTANCES[@]}"; do
     seed_node "$name"
 done
 
+step "pause branch reconcilers while applying the working tree"
+pause_reconcilers
+
 converge() {
     ansible-playbook -i "$INVENTORY" staging/converge.yml "$@"
 }
@@ -231,20 +285,65 @@ mint_join_converge() {
 # fetch the cert). Each node gets its own single-use key, minted immediately
 # before its converge.
 mint_join_converge "$CORE"
+
+# The enrollment converge starts CoreDNS on the newly assigned tailnet address,
+# but Headscale ran before enrollment and deliberately had no address to route.
+# This following convergence discovers the enrolled core node, persists its
+# validated address, and wires the svc.sbkt.co split route exactly once.
+step "converge $CORE again to wire the resolver split route"
+converge --limit "$CORE"
+
 mint_join_converge "$WEB1"
 
 # Idempotence check: a full re-converge should ideally report changed=0. First
 # bring-up can legitimately have ordering-dependent changes (e.g. a service that
 # only settled after the key landed), so warn rather than fail and print the recap.
 step "idempotence check (full re-converge)"
-recap="$(converge 2>&1 | tee /dev/stderr | grep -E 'ok=[0-9]+.*changed=[0-9]+' || true)"
-if printf '%s\n' "$recap" | grep -qE 'changed=[1-9]'; then
+if converge_output="$(converge 2>&1)"; then
+    printf '%s\n' "$converge_output" >&2
+else
+    converge_rc=$?
+    printf '%s\n' "$converge_output" >&2
+    echo "full re-converge failed with exit $converge_rc" >&2
+    exit "$converge_rc"
+fi
+recap="$(printf '%s\n' "$converge_output" | grep -E 'ok=[0-9]+.*changed=[0-9]+' || true)"
+if [ -z "$recap" ]; then
+    echo "full re-converge produced no Ansible recap" >&2
+    exit 1
+elif printf '%s\n' "$recap" | grep -qE 'changed=[1-9]'; then
     warn "re-converge reported changes (see recap below). On first bring-up this can"
     warn "be ordering-dependent; run staging/up.sh again and it should settle to changed=0."
     printf '%s\n' "$recap" >&2
 else
     echo "idempotent: full re-converge reported changed=0 on all hosts."
 fi
+
+step "verify split DNS before resuming branch reconciliation"
+# Force a fresh control-plane connection so the status check is not reading a
+# network map cached from before Headscale's configuration restart.
+incus_in exec "$WEB1" -- systemctl restart tailscaled
+route_ready=false
+for _ in $(seq 1 30); do
+    if incus_in exec "$WEB1" -- tailscale debug netmap 2>/dev/null | \
+        grep -q '"svc.sbkt.co"'; then
+        route_ready=true
+        break
+    fi
+    sleep 2
+done
+if [ "$route_ready" != true ]; then
+    echo "staging-web1 did not receive the svc.sbkt.co split route" >&2
+    exit 1
+fi
+resolver_address="$(incus_in exec "$CORE" -- cat /var/lib/substrate/resolver-address | tr -d '[:space:]')"
+service_addresses="$(incus_in exec "$WEB1" -- getent ahostsv4 control.svc.sbkt.co \
+    | awk '{print $1}' | sort -u)"
+if [ "$service_addresses" != "$resolver_address" ]; then
+    echo "control.svc.sbkt.co resolved to '$service_addresses', expected '$resolver_address'" >&2
+    exit 1
+fi
+task staging:status STAGING_PROJECT="$PROJECT"
 
 printf '\n\033[1;32mStaging fleet is up.\033[0m %s and %s are running and converged.\n' "$CORE" "$WEB1"
 echo "Seed the Cloudflare token on $CORE to enable cert issuance — see staging/README.md."

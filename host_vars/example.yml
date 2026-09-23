@@ -21,7 +21,7 @@ node_roles: []
 
 # The `dns` role (roles/dns/) reconciles the PUBLIC Cloudflare zone for sbkt.co
 # from its committed record list (roles/dns/vars/main.yml) — apex/www/MX/TXT and
-# other public names only. It NEVER manages *.net.sbkt.co: internal host names
-# are owned by MagicDNS and must stay out of public DNS and CT logs. Assign it to
-# a single node (via node_roles above); it self-installs community.general and no-
-# ops unless a Cloudflare token file is present. See roles/dns/tasks/main.yml.
+# other public names only. It NEVER manages *.net.sbkt.co (MagicDNS nodes) or
+# *.svc.sbkt.co (CoreDNS services); both stay out of public DNS. Declare service
+# names through resolver_service_records on the resolver node. Assign `dns` to a
+# single node; it no-ops unless a Cloudflare token file is present.

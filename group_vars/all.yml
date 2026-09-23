@@ -66,25 +66,12 @@ substrate_sops_secrets:
     dest: "{{ substrate_secrets_dir }}/tailnet-authkey"
     mode: "0600"
 
-# Public apex domain (Cloudflare-managed) and the tailnet subdomain under it.
-# MagicDNS names every node <hostname>.{{ substrate_tailnet_domain }}; hosts
-# never get public DNS records and the only public cert artifact is the
-# wildcard, so internal topology stays out of CT logs and public DNS.
+# Three disjoint DNS authorities: Cloudflare owns the public apex, Headscale
+# MagicDNS owns node names, and CoreDNS owns internal service names. Neither
+# internal suffix may appear in the public zone.
 substrate_domain: sbkt.co
 substrate_tailnet_domain: net.sbkt.co
-
-# Internal resolver (CoreDNS) fleet DNS wiring — GATED, default OFF. The
-# `resolver` role installs CoreDNS on the core node regardless; these two vars
-# control the SEPARATE step of pointing every node's DNS at it (the section 8
-# wiring). While substrate_resolver_wire_dns is false, roles/headscale keeps its
-# default global nameservers, so merging the resolver role is inert for existing
-# nodes. To cut the fleet over: pin the core node's tailnet IPv4 in
-# substrate_resolver_address and flip substrate_resolver_wire_dns true — then
-# roles/headscale emits CoreDNS as the sole global nameserver with
-# override_local_dns. See docs/runbook.md. (Fleet-scoped — consumed by both
-# roles/resolver and roles/headscale — hence here, not in a role's defaults.)
-substrate_resolver_wire_dns: false
-substrate_resolver_address: ""
+substrate_service_domain: svc.sbkt.co
 
 # Headscale coordination server URL as reachable BY CLIENTS. Left empty here
 # because it is topology-specific and MUST be set per-node in host_vars for any

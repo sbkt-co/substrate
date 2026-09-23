@@ -18,7 +18,9 @@ dns_token_file: "{{ substrate_secrets_dir }}/cloudflare-dns.ini"
 # Master switch: set false to skip DNS reconciliation on a node entirely.
 dns_manage_enabled: true
 
-# Privacy guard. Internal host names live under *.net.sbkt.co and are owned by
-# MagicDNS (headscale) — they must NEVER appear in the public zone or CT logs.
-# Any managed record name matching this suffix aborts the converge.
-dns_forbidden_suffix: '\.net\.sbkt\.co$'
+# Privacy guard. Neither MagicDNS host names nor CoreDNS service names may
+# appear in the public zone. Match each exact apex and every descendant without
+# catching unrelated near-suffix names.
+dns_forbidden_domains:
+  - "{{ substrate_tailnet_domain }}"
+  - "{{ substrate_service_domain }}"

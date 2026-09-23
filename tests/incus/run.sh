@@ -198,6 +198,30 @@ assert got == want, f\"fixture round-trip mismatch: {got!r} != {want!r}\"
 '
 
 converge() { ansible-playbook -i "$INVENTORY" tests/incus/converge.yml "$@"; }
+converge_role() {
+    local role="$1"
+    shift
+    ansible-playbook -i "$INVENTORY" tests/incus/converge-role.yml \
+        --extra-vars "incus_test_role=$role" "$@"
+}
+
+assert_play_idempotent() {
+    local label="$1"
+    shift
+    local output rc
+    if output="$("$@" 2>&1)"; then
+        printf '%s\n' "$output" >&2
+    else
+        rc=$?
+        printf '%s\n' "$output" >&2
+        echo "$label convergence failed with exit $rc" >&2
+        exit "$rc"
+    fi
+    if ! grep -qE 'changed=0[[:space:]].*failed=0' <<<"$output"; then
+        echo "$label convergence was not idempotent" >&2
+        exit 1
+    fi
+}
 
 # First converge: brings up headscale, installs tailscale + tailscaled, applies
 # the skip-loudly secret roles, and decrypts the test-only SOPS secret. The
@@ -206,48 +230,17 @@ converge() { ansible-playbook -i "$INVENTORY" tests/incus/converge.yml "$@"; }
 step "converge (first run)"
 converge
 
-# HARNESS WORKAROUND for a role bug this test surfaced (fix belongs in
-# roles/dns, out of scope here): the dns role guards its
-# `ansible-galaxy collection install community.general` with
-# creates: /root/.ansible/collections/ansible_collections/community/general,
-# but on any node where the Debian `ansible` metapackage (installed by
-# roles/reconciler) already provides community.general, ansible-galaxy is a
-# ~1s no-op that never writes that path — so the task reports `changed` on
-# EVERY converge and idempotence can never reach changed=0. Satisfy the guard
-# truthfully by linking the packaged collection into the expected location
-# (module resolution actually happens on the ansible-pull controller side, and
-# the link points at the real installed collection). Falls back to a real
-# galaxy install into that path if the package layout ever changes.
-step "satisfy roles/dns galaxy creates-guard (workaround for surfaced role bug)"
-incus_in exec "$CONTAINER" -- sh -c '
-    set -eu
-    guard=/root/.ansible/collections/ansible_collections/community/general
-    if [ ! -e "$guard" ]; then
-        mkdir -p "$(dirname "$guard")"
-        # Ask galaxy where the collection already lives (it IS installed —
-        # that is the whole bug: `install` no-ops with "Nothing to do" yet
-        # never writes the creates: path) and link that real location into
-        # the guard path. A plain re-install would no-op the same way, so
-        # the fallback must be --force, which always writes into -p.
-        src="$(ansible-galaxy collection list --format json 2>/dev/null | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for root, cols in data.items():
-    if \"community.general\" in cols:
-        print(root + \"/community/general\")
-        break
-" || true)"
-        if [ -n "$src" ] && [ -d "$src" ]; then
-            ln -s "$src" "$guard"
-        else
-            ansible-galaxy collection install community.general \
-                -p /root/.ansible/collections --force
-        fi
-    fi
-    # The workaround MUST leave the guard satisfied, or the idempotence gate
-    # below fails again on the same task; verify it now, loudly.
-    [ -e "$guard" ] || { echo "galaxy creates-guard still unsatisfied at $guard" >&2; exit 1; }
-'
+step "assert first converge has no resolver route"
+incus_in exec "$CONTAINER" -- test ! -e /var/lib/substrate/resolver-address
+if incus_in exec "$CONTAINER" -- grep -Eq '^[[:space:]]+svc\.sbkt\.co:' /etc/headscale/config.yaml; then
+    echo "first converge unexpectedly rendered the svc.sbkt.co split route" >&2
+    exit 1
+fi
+if incus_in exec "$CONTAINER" -- systemctl is-active --quiet coredns; then
+    echo "first converge unexpectedly started CoreDNS without a tailnet address" >&2
+    exit 1
+fi
+
 
 # Enrol this single node into its own tailnet: ensure the fleet headscale user
 # exists, mint a SINGLE-USE preauth key, seed it (mode 0600), and re-converge so
@@ -273,13 +266,164 @@ unset key
 step "converge again so the tailnet role enrols with the seeded key"
 converge
 
-step "idempotence (re-converge must report changed=0)"
-if converge | tee /dev/stderr | grep -qE 'changed=0[[:space:]].*failed=0'; then
-    echo "idempotent."
-else
-    echo "NOT IDEMPOTENT — re-converge reported changes" >&2
+step "assert enrollment starts CoreDNS before resolver discovery"
+if ! incus_in exec "$CONTAINER" -- systemctl is-active --quiet coredns; then
+    echo "enrollment converge did not start CoreDNS" >&2
+    incus_in exec "$CONTAINER" -- systemctl status coredns --no-pager >&2 || true
+    incus_in exec "$CONTAINER" -- journalctl -u coredns --no-pager -n 40 >&2 || true
     exit 1
 fi
+if incus_in exec "$CONTAINER" -- test -e /var/lib/substrate/resolver-address; then
+    echo "enrollment converge unexpectedly created the resolver cache:" >&2
+    incus_in exec "$CONTAINER" -- cat /var/lib/substrate/resolver-address >&2 || true
+    incus_in exec "$CONTAINER" -- headscale nodes list --output json >&2 || true
+    exit 1
+fi
+if incus_in exec "$CONTAINER" -- grep -Eq '^[[:space:]]+svc\.sbkt\.co:' /etc/headscale/config.yaml; then
+    echo "enrollment converge unexpectedly rendered the svc.sbkt.co split route" >&2
+    incus_in exec "$CONTAINER" -- sed -n '/^dns:/,/^unix_socket:/p' /etc/headscale/config.yaml >&2 || true
+    exit 1
+fi
+headscale_before_wiring="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
+
+step "converge once more so headscale wires split DNS"
+converge_role headscale
+resolver_address="$(incus_in exec "$CONTAINER" -- tailscale ip -4 | tr -d '[:space:]')"
+cached_address="$(incus_in exec "$CONTAINER" -- cat /var/lib/substrate/resolver-address | tr -d '[:space:]')"
+[ "$cached_address" = "$resolver_address" ] || {
+    echo "resolver cache $cached_address does not match tailnet address $resolver_address" >&2
+    exit 1
+}
+incus_in exec "$CONTAINER" -- grep -Eq '^[[:space:]]+svc\.sbkt\.co:' /etc/headscale/config.yaml
+incus_in exec "$CONTAINER" -- grep -Eq "^[[:space:]]+- $resolver_address$" /etc/headscale/config.yaml
+headscale_after_wiring="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
+[ -n "$headscale_before_wiring" ] && [ "$headscale_before_wiring" != "$headscale_after_wiring" ] || {
+    echo "headscale did not restart when split DNS was first wired" >&2
+    exit 1
+}
+
+step "assert idempotence does not restart headscale"
+assert_play_idempotent "full re-converge" converge
+echo "idempotent."
+headscale_after_idempotence="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
+[ "$headscale_after_idempotence" = "$headscale_after_wiring" ] || {
+    echo "headscale restarted during an idempotent convergence" >&2
+    exit 1
+}
+
+
+step "reload CoreDNS for a records-only service-zone change"
+coredns_before_zone_reload="$(incus_in exec "$CONTAINER" -- systemctl show coredns -p InvocationID --value | tr -d '[:space:]')"
+# Do not query reload-probe before updating the zone: that would prime an NXDOMAIN
+# in the Tailscale/MagicDNS path and could hide a successful CoreDNS file reload.
+# Each harness run starts from a fresh container whose initial fixture has only
+# the control record, so the post-update lookup still proves the new record loaded.
+converge_role resolver --extra-vars '{"resolver_service_records":[{"name":"control","type":"CNAME","value":"substrate-test.net.sbkt.co."},{"name":"reload-probe","type":"CNAME","value":"substrate-test.net.sbkt.co."}]}'
+# Wait for a file-plugin scan that happened after convergence completed. Querying
+# sooner can cache NXDOMAIN in Tailscale and hide the successful reload from every
+# subsequent retry.
+reload_after="$(incus_in exec "$CONTAINER" -- date +%s)"
+reload_after="$((reload_after + 1))"
+zone_reload_seen=false
+for _ in $(seq 1 10); do
+    if incus_in exec "$CONTAINER" -- journalctl -u coredns --since "@$reload_after" --no-pager 2>/dev/null \
+        | grep -q 'plugin/file: Successfully reloaded zone'; then
+        zone_reload_seen=true
+        break
+    fi
+    sleep 1
+done
+[ "$zone_reload_seen" = true ] || {
+    echo "CoreDNS did not scan the records-only zone update after convergence" >&2
+    incus_in exec "$CONTAINER" -- journalctl -u coredns --no-pager -n 80 >&2 || true
+    exit 1
+}
+zone_reload_ready=false
+if incus_in exec "$CONTAINER" -- getent ahostsv4 reload-probe.svc.sbkt.co 2>/dev/null | grep -q "$resolver_address"; then
+    zone_reload_ready=true
+fi
+[ "$zone_reload_ready" = true ] || {
+    echo "CoreDNS did not serve the records-only zone update after convergence" >&2
+    incus_in exec "$CONTAINER" -- cat /etc/coredns/internal.zone >&2 || true
+    incus_in exec "$CONTAINER" -- systemctl status coredns --no-pager >&2 || true
+    incus_in exec "$CONTAINER" -- journalctl -u coredns --no-pager -n 80 >&2 || true
+    incus_in exec "$CONTAINER" -- tailscale dns status >&2 || true
+    exit 1
+}
+coredns_after_zone_reload="$(incus_in exec "$CONTAINER" -- systemctl show coredns -p InvocationID --value | tr -d '[:space:]')"
+[ "$coredns_after_zone_reload" = "$coredns_before_zone_reload" ] || {
+    echo "records-only zone update restarted CoreDNS instead of reloading it" >&2
+    exit 1
+}
+
+assert_lkg_unchanged() {
+    local label="$1"
+    shift
+    local cache_before config_before invocation_before cache_after config_after invocation_after
+    cache_before="$(incus_in exec "$CONTAINER" -- sha256sum /var/lib/substrate/resolver-address | awk '{print $1}')"
+    config_before="$(incus_in exec "$CONTAINER" -- sha256sum /etc/headscale/config.yaml | awk '{print $1}')"
+    invocation_before="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
+    assert_play_idempotent "$label discovery rejection" converge_role headscale "$@"
+    cache_after="$(incus_in exec "$CONTAINER" -- sha256sum /var/lib/substrate/resolver-address | awk '{print $1}')"
+    config_after="$(incus_in exec "$CONTAINER" -- sha256sum /etc/headscale/config.yaml | awk '{print $1}')"
+    invocation_after="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
+    [ "$cache_after" = "$cache_before" ] && [ "$config_after" = "$config_before" ] && [ "$invocation_after" = "$invocation_before" ] || {
+        echo "$label discovery rejection changed cache, config, or Headscale invocation" >&2
+        exit 1
+    }
+}
+
+step "accept a changed valid resolver address"
+changed_resolver_address=100.127.255.254
+printf '%s' '[{"given_name":"substrate-test","ip_addresses":["100.127.255.254"]}]' | \
+    incus_in exec "$CONTAINER" -- sh -c 'cat > /tmp/substrate-resolver-nodes.json && chmod 0644 /tmp/substrate-resolver-nodes.json'
+invocation_before_changed_address="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
+converge_role headscale --extra-vars '{"headscale_nodes_list_argv":["/bin/cat","/tmp/substrate-resolver-nodes.json"]}'
+[ "$(incus_in exec "$CONTAINER" -- cat /var/lib/substrate/resolver-address | tr -d '[:space:]')" = "$changed_resolver_address" ]
+incus_in exec "$CONTAINER" -- grep -Eq "^[[:space:]]+- $changed_resolver_address$" /etc/headscale/config.yaml
+invocation_after_changed_address="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
+[ "$invocation_after_changed_address" != "$invocation_before_changed_address" ] || {
+    echo "headscale did not restart for a changed valid resolver address" >&2
+    exit 1
+}
+
+step "restore the actual discovered resolver address"
+converge_role headscale
+[ "$(incus_in exec "$CONTAINER" -- cat /var/lib/substrate/resolver-address | tr -d '[:space:]')" = "$resolver_address" ]
+incus_in exec "$CONTAINER" -- grep -Eq "^[[:space:]]+- $resolver_address$" /etc/headscale/config.yaml
+
+step "reject failed resolver discovery without replacing LKG"
+assert_lkg_unchanged command-failure \
+    --extra-vars '{"headscale_nodes_list_argv":["/bin/false"]}'
+
+step "reject malformed resolver discovery without replacing LKG"
+# One full-play rejection proves the Headscale role preserves LKG state. The
+# selector's focused test covers the remaining malformed/cardinality/address
+# variants without paying for another full system converge per input.
+printf '%s' 'not-json' | \
+    incus_in exec "$CONTAINER" -- sh -c 'cat > /tmp/substrate-resolver-nodes.json && chmod 0644 /tmp/substrate-resolver-nodes.json'
+assert_lkg_unchanged malformed-json \
+    --extra-vars '{"headscale_nodes_list_argv":["/bin/cat","/tmp/substrate-resolver-nodes.json"]}'
+
+step "withdraw split DNS when the resolver role is removed"
+headscale_before_withdrawal="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
+converge_role headscale --extra-vars '{"node_roles":["headscale","tailnet","dns","cert_issuer","cert_client"]}'
+incus_in exec "$CONTAINER" -- test ! -e /var/lib/substrate/resolver-address
+if incus_in exec "$CONTAINER" -- grep -Eq '^[[:space:]]+svc\.sbkt\.co:' /etc/headscale/config.yaml; then
+    echo "Headscale retained the svc.sbkt.co split route after resolver-role removal" >&2
+    exit 1
+fi
+headscale_after_withdrawal="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
+[ "$headscale_after_withdrawal" != "$headscale_before_withdrawal" ] || {
+    echo "Headscale did not restart when the resolver split route was withdrawn" >&2
+    exit 1
+}
+
+step "restore the resolver role and split DNS route"
+converge_role headscale
+[ "$(incus_in exec "$CONTAINER" -- cat /var/lib/substrate/resolver-address | tr -d '[:space:]')" = "$resolver_address" ]
+incus_in exec "$CONTAINER" -- grep -Eq '^[[:space:]]+svc\.sbkt\.co:' /etc/headscale/config.yaml
+incus_in exec "$CONTAINER" -- grep -Eq "^[[:space:]]+- $resolver_address$" /etc/headscale/config.yaml
 
 # Drift repair: exercise BOTH a DELETED managed file and a MODIFIED one. A pull
 # reconciler must restore deletions AND overwrite hand edits back to the committed

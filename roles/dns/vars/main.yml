@@ -5,12 +5,11 @@
 #
 #  !!  THIS ZONE MUST NEVER CONTAIN INTERNAL HOST RECORDS  !!
 #
-#  MagicDNS (headscale) owns everything under *.net.sbkt.co. Internal topology
-#  — machine names, tailnet addresses, service hostnames — MUST stay out of
-#  public DNS. Publishing it here leaks the fleet's internal map into public
-#  resolvers AND into Certificate Transparency logs (permanent, unredactable).
-#  The privacy guard in tasks/main.yml refuses to converge if any name below
-#  matches *.net.sbkt.co; do not weaken it.
+#  Headscale MagicDNS owns *.net.sbkt.co and CoreDNS owns *.svc.sbkt.co.
+#  Machine names, tailnet addresses, and service names MUST stay out of public
+#  DNS. Publishing either private namespace leaks the fleet's internal map into
+#  public resolvers. The privacy guard in tasks/main.yml refuses both exact
+#  private apices and all descendants; do not weaken it.
 #
 #  Records here are reconciled by (name, type, value):
 #    - dns_records_present : ensured to exist (state: present)
@@ -28,7 +27,7 @@
 
 # Records ensured present in the public zone.
 dns_records_present: []
-#  Examples (public names only — never *.net.sbkt.co):
+#  Examples (public names only — never *.net.sbkt.co or *.svc.sbkt.co):
 #  - { name: "@",    type: "A",     value: "203.0.113.10", proxied: true }
 #  - { name: "www",  type: "CNAME", value: "sbkt.co",      proxied: true }
 #  - { name: "@",    type: "MX",    value: "10 mx.example-mail.com" }

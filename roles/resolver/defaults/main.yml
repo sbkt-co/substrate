@@ -1,11 +1,10 @@
 ---
 # roles/resolver/defaults/main.yml
 #
-# CoreDNS as the fleet's internal resolver (docs/architecture.md section 8). A
-# single-binary systemd service, authoritative for the git-managed internal zone
-# under substrate_domain and forwarding everything else to public upstreams over
-# DoT. Co-located with headscale on the core node so the zone generator has local
-# `headscale` CLI access.
+# CoreDNS as the fleet's service resolver (docs/design/dns-resolution.md). A
+# single-binary systemd service, authoritative for the git-managed service zone
+# under substrate_service_domain and forwarding everything else to public
+# upstreams over DoT.
 #
 # Every tunable lives here with a safe default; override in host_vars. Never
 # redefine fleet-wide vars from group_vars/all.yml (substrate_domain, etc.).
@@ -46,7 +45,15 @@ resolver_wrapper: /usr/local/bin/coredns-serve.sh
 # and owned by the coredns user.
 resolver_bind_resolver: /usr/local/bin/coredns-bind.sh
 resolver_bind_file: /run/coredns/bind
+resolver_record_validator: /usr/local/libexec/substrate-validate-service-records
 resolver_service_name: coredns
+
+# Git-managed records beneath substrate_service_domain. Values use ordinary DNS
+# zone-file syntax; absolute domain targets (CNAME/MX/SRV) must end in a dot.
+# The role supplies the zone apex, SOA/NS records, and the resolver's derived
+# tailnet address automatically.
+resolver_service_zone_ttl: 300
+resolver_service_records: []
 
 # Upstream resolvers CoreDNS forwards non-internal queries to, over DoT. Var-
 # driven so an environment can point at a different encrypted upstream. The TLS
@@ -60,8 +67,5 @@ resolver_forward_tls_servername: cloudflare-dns.com
 # only (resolved at service start by the wrapper), never a public interface.
 resolver_listen_port: 53
 
-# The GATED fleet DNS-wiring vars (substrate_resolver_wire_dns,
-# substrate_resolver_address) are fleet-scoped — consumed by BOTH this role and
-# roles/headscale's config template — so they live in group_vars/all.yml (with
-# safe defaults: wiring OFF), not here. Pointing headscale at CoreDNS is a
-# separate, deliberate change; see docs/runbook.md.
+# Headscale discovers this resolver's address from its enrolled node data and
+# persists a validated last-known-good value; no address is configured here.
