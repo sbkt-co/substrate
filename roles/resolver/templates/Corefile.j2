@@ -1,26 +1,34 @@
 {{ ansible_managed | comment }}
 # Rendered by roles/resolver. Do not edit by hand; change the role defaults or
-# host_vars and re-converge. Implements docs/architecture.md section 8:
-# authoritative for the internal zone under {{ substrate_domain }} (answered from
-# a git/generated hosts-file zone with fallthrough), everything else forwarded to
-# public upstreams over DoT.
+# host_vars and re-converge. Implements docs/design/dns-resolution.md:
+# authoritative for the service zone {{ substrate_service_domain }} (answered from
+# a git-managed RFC-style zone), everything else forwarded to public upstreams over
+# DoT. The service and MagicDNS suffixes are distinct from each other and from
+# the public {{ substrate_domain }} zone, preserving three disjoint authorities.
 #
 # COREDNS_TAILNET_IP is exported by the serve wrapper ({{ resolver_wrapper }}) at
 # start time (this node's tailnet IPv4). Combined with the literal loopback, the
 # resolver is reachable on the tailnet but never on a public interface. CoreDNS
 # env substitution yields a single token, so loopback is a literal here.
 
-{{ substrate_domain }}:{{ resolver_listen_port }} {
+{{ substrate_service_domain }}:{{ resolver_listen_port }} {
     bind 127.0.0.1 {$COREDNS_TAILNET_IP}
-    # Internal names are answered from the hosts-format zone; a miss falls
-    # through to the forward below so public {{ substrate_domain }} names still
-    # resolve instead of NXDOMAIN'ing under our authority.
-    hosts {{ resolver_zone_file }} {{ substrate_domain }} {
-        fallthrough
+    # This suffix is private and authoritative. A miss returns NXDOMAIN here;
+    # it is never forwarded to a public resolver.
+    file {{ resolver_zone_file }} {{ substrate_service_domain }} {
+        reload 2s
+        reload_by_mtime
     }
-    forward . {{ resolver_forwarders | join(' ') }} {
-        tls_servername {{ resolver_forward_tls_servername }}
-    }
+    reload
+    log
+    errors
+}
+
+# Service records may target MagicDNS node names. Resolve that private suffix
+# through tailscaled's local DNS proxy rather than leaking it to public upstreams.
+{{ substrate_tailnet_domain }}:{{ resolver_listen_port }} {
+    bind 127.0.0.1 {$COREDNS_TAILNET_IP}
+    forward . 100.100.100.100
     reload
     log
     errors

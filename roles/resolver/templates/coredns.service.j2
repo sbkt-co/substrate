@@ -1,10 +1,10 @@
 {{ ansible_managed | comment }}
-# Managed by roles/resolver. Runs CoreDNS as the fleet's internal resolver, bound
+# Managed by roles/resolver. Runs CoreDNS as the fleet's service resolver, bound
 # to loopback + the tailnet IPv4 (resolved at start by the serve wrapper). Binds
 # :53 as an unprivileged user via cap_net_bind_service; if the tailnet IP is not
 # up yet the wrapper exits non-zero and Restart=on-failure retries.
 [Unit]
-Description=CoreDNS internal resolver (tailnet + loopback)
+Description=CoreDNS service resolver (tailnet + loopback)
 Documentation=https://coredns.io
 After=network-online.target tailscaled.service
 Wants=network-online.target tailscaled.service
@@ -23,9 +23,8 @@ RuntimeDirectoryMode=0750
 # rather than binding CoreDNS to a public interface.
 ExecStartPre=+{{ resolver_bind_resolver }}
 ExecStart={{ resolver_wrapper }}
-# The reload plugin also polls the Corefile/zone, but SIGUSR1 forces an immediate
-# reload of the generated zone without dropping the listener.
-ExecReload=/bin/kill -USR1 $MAINPID
+# The file plugin polls the git-managed zone by mtime, so records-only changes
+# reload without restarting the listener.
 Restart=on-failure
 RestartSec=5
 

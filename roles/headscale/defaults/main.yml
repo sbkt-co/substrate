@@ -15,10 +15,12 @@ headscale_deb_url: >-
   https://github.com/juanfont/headscale/releases/download/v{{ headscale_version }}/headscale_{{ headscale_version }}_linux_{{ headscale_arch }}.deb
 headscale_deb_dest: "/tmp/headscale_{{ headscale_version }}_linux_{{ headscale_arch }}.deb"
 
-# Headscale runtime paths (match what the .deb's systemd unit expects).
+# Headscale runtime paths and service account (match the .deb's systemd unit).
 headscale_config_dir: /etc/headscale
 headscale_data_dir: /var/lib/headscale
 headscale_service_name: headscale
+headscale_system_user: headscale
+headscale_system_group: headscale
 
 # Listen addresses. The coordination API defaults to loopback so a node is never
 # reachable by default; an environment must explicitly opt into a reachable bind
@@ -37,6 +39,19 @@ headscale_global_nameservers:
   - "1.1.1.1"
   - "8.8.8.8"
 
+# Derived resolver state. Headscale discovers the co-located node by its exact
+# enrolled name, validates one CGNAT IPv4, and retains that last-known-good value
+# across temporary discovery failures. The argv seam is overridden only by the
+# disposable integration harness to exercise failure paths.
+headscale_resolver_address_cache: "{{ substrate_var_dir }}/resolver-address"
+headscale_resolver_selector: /usr/local/libexec/substrate-select-resolver-address
+headscale_resolver_node_name: "{{ tailnet_hostname | default(ansible_hostname) }}"
+headscale_nodes_list_argv:
+  - headscale
+  - nodes
+  - list
+  - --output
+  - json
 # The headscale user (namespace) fleet nodes enrol into.
 headscale_user: substrate
 

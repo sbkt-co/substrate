@@ -12,6 +12,7 @@
 node_roles:
   - headscale
   - tailnet
+  - resolver
   - cert_issuer
 
 # Reconcile fast so drift and bad promotions surface quickly on staging.
@@ -33,3 +34,10 @@ substrate_headscale_url: "http://staging-core.incus:8080"
 # bridge; production must keep the loopback default and front headscale with a
 # reverse proxy / firewall rather than widening this bind.
 headscale_listen_addr: "0.0.0.0:8080"
+
+# Git-managed service authority. The service name follows the core node through
+# MagicDNS, so no tailnet address is pinned in inventory.
+resolver_service_records:
+  - name: control
+    type: CNAME
+    value: "staging-core.{{ substrate_tailnet_domain }}."

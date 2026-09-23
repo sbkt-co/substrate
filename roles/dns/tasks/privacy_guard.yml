@@ -1,0 +1,26 @@
+---
+- name: Assert no managed record publishes a private DNS name
+  ansible.builtin.assert:
+    that:
+      - dns_record_fqdn is not regex(dns_forbidden_name_pattern, ignorecase=true)
+      - (item.value | string) is not regex(dns_forbidden_value_pattern, ignorecase=true)
+    fail_msg: >-
+      A managed record is the private domain {{ dns_forbidden_domains | join(' or ') }},
+      one of its descendants, or targets one of those names. MagicDNS host names
+      and CoreDNS service names MUST NOT appear in the public {{ dns_zone }} zone.
+      Remove the record from dns_records_present; dns_records_absent may name a
+      private record so Git can remove an existing leak.
+    success_msg: "Public zone record {{ item.name }} contains no private name or target."
+  vars:
+    dns_public_zone: "{{ dns_zone | lower | regex_replace('\\.$', '') }}"
+    dns_record_name: "{{ item.name | lower | regex_replace('\\.$', '') }}"
+    dns_record_fqdn: >-
+      {{ dns_record_name
+         if dns_record_name == dns_public_zone or dns_record_name.endswith('.' ~ dns_public_zone)
+         else dns_record_name ~ '.' ~ dns_public_zone }}
+    dns_forbidden_alternation: "{{ dns_forbidden_domains | map('regex_escape') | join('|') }}"
+    dns_forbidden_name_pattern: "(^|\\.)({{ dns_forbidden_alternation }})\\.?$"
+    dns_forbidden_value_pattern: "(^|[^A-Za-z0-9_-])([A-Za-z0-9_-]+\\.)*({{ dns_forbidden_alternation }})\\.?(?=$|[^A-Za-z0-9_.-])"
+  loop: "{{ dns_records_present }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.type }}"

@@ -38,18 +38,76 @@
   ansible.builtin.file:
     path: "{{ headscale_data_dir }}"
     state: directory
-    owner: root
-    group: root
+    owner: "{{ headscale_system_user }}"
+    group: "{{ headscale_system_group }}"
     mode: "0750"
 
-- name: Render headscale configuration
+- name: Install the resolver-address selector
+  ansible.builtin.copy:
+    src: select_resolver_address.py
+    dest: "{{ headscale_resolver_selector }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Derive whether this node actually runs the resolver authority
+  ansible.builtin.set_fact:
+    headscale_resolver_enabled: "{{ 'resolver' in (node_roles | default([])) }}"
+    headscale_effective_resolver_address: ""
+
+- name: Withdraw stale resolver state when the resolver role is absent
+  ansible.builtin.file:
+    path: "{{ headscale_resolver_address_cache }}"
+    state: absent
+  when: not (headscale_resolver_enabled | bool)
+
+- name: Check for a last-known-good resolver address
+  ansible.builtin.stat:
+    path: "{{ headscale_resolver_address_cache }}"
+  register: headscale_resolver_cache_stat
+  when: headscale_resolver_enabled | bool
+
+- name: Read the last-known-good resolver address
+  ansible.builtin.slurp:
+    src: "{{ headscale_resolver_address_cache }}"
+  register: headscale_resolver_cache_slurp
+  when:
+    - headscale_resolver_enabled | bool
+    - headscale_resolver_cache_stat.stat.exists | default(false)
+
+- name: Validate the cached resolver address
+  ansible.builtin.command:
+    argv:
+      - "{{ headscale_resolver_selector }}"
+      - --prefix
+      - "{{ headscale_prefix_v4 }}"
+    stdin: "{{ headscale_resolver_cache_slurp.content | default('') | b64decode }}"
+  register: headscale_cached_address_validation
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - headscale_resolver_enabled | bool
+    - headscale_resolver_cache_stat.stat.exists | default(false)
+
+- name: Initialize the effective resolver address from last-known-good state
+  ansible.builtin.set_fact:
+    headscale_effective_resolver_address: "{{ headscale_cached_address_validation.stdout | trim }}"
+  when: (headscale_cached_address_validation.rc | default(1)) == 0
+
+- name: Check whether a headscale configuration already exists
+  ansible.builtin.stat:
+    path: "{{ headscale_config_dir }}/config.yaml"
+  register: headscale_config_stat
+
+- name: Bootstrap headscale configuration before discovery
   ansible.builtin.template:
     src: config.yaml.j2
     dest: "{{ headscale_config_dir }}/config.yaml"
     owner: root
     group: root
     mode: "0644"
-  notify: Restart headscale
+  when: not headscale_config_stat.stat.exists
 
 - name: Enable and start headscale
   ansible.builtin.systemd:
@@ -58,7 +116,7 @@
     state: started
   when: ansible_service_mgr == 'systemd'
 
-- name: Flush handlers so the user probe hits the running/restarted server
+- name: Flush handlers before querying the running server
   ansible.builtin.meta: flush_handlers
 
 - name: List existing headscale users
@@ -71,13 +129,85 @@
 - name: Create the fleet headscale user (namespace)
   ansible.builtin.command: headscale users create {{ headscale_user }}
   changed_when: true
-  # Exact-match on the parsed JSON, not a substring of the raw output: a user
-  # named e.g. "substrate-admin" must NOT satisfy the check for "substrate".
   when:
     - ansible_service_mgr == 'systemd'
     - >-
       headscale_users.stdout | default('[]') | from_json
       | selectattr('name', 'equalto', headscale_user) | list | length == 0
+
+- name: Discover tailnet nodes for resolver address selection
+  ansible.builtin.command:
+    argv: "{{ headscale_nodes_list_argv }}"
+  register: headscale_nodes_list
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - ansible_service_mgr == 'systemd'
+    - headscale_resolver_enabled | bool
+
+- name: Select and validate exactly one co-located resolver address
+  ansible.builtin.command:
+    argv:
+      - "{{ headscale_resolver_selector }}"
+      - --prefix
+      - "{{ headscale_prefix_v4 }}"
+      - --node-name
+      - "{{ headscale_resolver_node_name }}"
+      - --base64-input
+    stdin: "{{ headscale_nodes_list.stdout | default('') | b64encode }}"
+  register: headscale_discovered_address_validation
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - ansible_service_mgr == 'systemd'
+    - headscale_resolver_enabled | bool
+    - (headscale_nodes_list.rc | default(1)) == 0
+    - (headscale_nodes_list.stdout | default('') | trim) | length > 0
+
+- name: Persist the validated resolver address
+  ansible.builtin.copy:
+    content: "{{ headscale_discovered_address_validation.stdout | trim }}\n"
+    dest: "{{ headscale_resolver_address_cache }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - (headscale_discovered_address_validation.rc | default(1)) == 0
+    - (headscale_discovered_address_validation.stdout | default('') | trim) | length > 0
+
+- name: Prefer fresh resolver discovery over last-known-good state
+  ansible.builtin.set_fact:
+    headscale_effective_resolver_address: "{{ headscale_discovered_address_validation.stdout | trim }}"
+  when: (headscale_discovered_address_validation.rc | default(1)) == 0
+
+- name: Note rejected resolver discovery and retained state
+  ansible.builtin.debug:
+    msg: >-
+      headscale: resolver address discovery was rejected on {{ inventory_hostname }} —
+      {{ headscale_discovered_address_validation.stderr | default('headscale node list was unavailable or empty') | trim }}.
+      {% if (headscale_effective_resolver_address | length) > 0 %}
+      Retaining last-known-good resolver {{ headscale_effective_resolver_address }}.
+      {% else %}
+      No last-known-good resolver exists; split DNS remains absent.
+      {% endif %}
+  when:
+    - ansible_service_mgr == 'systemd'
+    - headscale_resolver_enabled | bool
+    - (headscale_discovered_address_validation.rc | default(1)) != 0
+
+- name: Render headscale configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ headscale_config_dir }}/config.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart headscale
+
+- name: Flush resolver-address configuration changes
+  ansible.builtin.meta: flush_handlers
 
 # --- Backup timer -----------------------------------------------------------
 # Snapshots db.sqlite (via the SQLite online backup API) and noise_private.key
