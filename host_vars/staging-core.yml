@@ -26,7 +26,10 @@ reconciler_timeout_start_sec: "4min"
 
 # Headscale coordination server URL as reached by clients within the staging
 # fleet. Points at the staging-core container over the Incus-provided DNS name.
-substrate_headscale_url: "http://staging-core.incus:8080"
+# This node reaches its co-located coordinator over loopback. Tailscale permits
+# persistent plain-HTTP control connections only to loopback; using the Incus
+# hostname enrolls initially but is later forced to HTTPS and loses sync.
+substrate_headscale_url: "http://127.0.0.1:8080"
 
 # Widen the headscale coordination bind to all interfaces so the peer node
 # (staging-web1) can reach it over the staging-core.incus name. This is safe
