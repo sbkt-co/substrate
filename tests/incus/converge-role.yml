@@ -1,7 +1,4 @@
 ---
-# Apply one differentiation role against the already-bootstrapped Incus node.
-# Transition tests use this instead of reconverging unrelated fleet layers for
-# every resolver/Headscale input change.
 - name: Converge one substrate role (Incus system container)
   hosts: all
   become: true
