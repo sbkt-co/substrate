@@ -1,6 +1,6 @@
 ---
-# Issue the fleet's single public artifact — a wildcard TLS cert for the tailnet
-# subdomain — via certbot + the Cloudflare DNS-01 plugin, then serve it to peers
+# Issue the fleet's single public artifact — a wildcard TLS cert for the public
+# domain — via certbot + the Cloudflare DNS-01 plugin, then serve it to peers
 # over the tailnet only.
 #
 # The Cloudflare credentials are a node-local certbot ini (dns_cloudflare_api_token
@@ -11,8 +11,8 @@
 cert_issuer_cloudflare_ini: "{{ substrate_secrets_dir }}/cloudflare.ini"
 
 # certbot lineage name and the resulting live directory.
-cert_issuer_name: "{{ substrate_tailnet_domain }}"
-cert_issuer_live_dir: "/etc/letsencrypt/live/{{ substrate_tailnet_domain }}"
+cert_issuer_name: "{{ substrate_domain }}"
+cert_issuer_live_dir: "/etc/letsencrypt/live/{{ substrate_domain }}"
 
 # Servable copy of the live cert, exposed to tailnet peers by the cert server.
 # Lives under the shared state dir, whose 0755 mode is load-bearing: the cert

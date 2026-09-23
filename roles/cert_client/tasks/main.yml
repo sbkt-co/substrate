@@ -1,5 +1,5 @@
 ---
-# Pull the wildcard cert + key from the tailnet issuer and write them locally,
+# Pull the public wildcard cert + key from the tailnet issuer and write them locally,
 # content-idempotently. A re-converge rewrites only when the served material
 # actually changed; an unreachable issuer is a loud skip, never a failure.
 
@@ -37,7 +37,7 @@
       http://{{ cert_client_issuer_host }}:{{ cert_client_serve_port }}/fullchain.pem
       returned {{ cert_client_fullchain.status | default('no response') }}.
       {% if cert_client_fullchain.status | default(-1) == 404 %}
-      The issuer is REACHABLE but is not serving the wildcard cert. Either no
+      The issuer is REACHABLE but is not serving the public wildcard cert. Either no
       cert has been issued there yet, or the cert server cannot read its own
       serve directory — python's http.server reports a permission error as a
       404, so check on the issuer that /var/lib/substrate is 0755 and that
