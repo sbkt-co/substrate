@@ -74,6 +74,19 @@ def main() -> None:
         "duplicate matching nodes were accepted",
     )
     expect_error(
+        lambda: selector.select_node_address(json.dumps(nodes), "other-node", "10.0.0.0/8"),
+        "a missing node identity was accepted",
+    )
+    malformed_address_nodes = [
+        {"given_name": "resolver-node", "ip_addresses": ["not-an-address"]}
+    ]
+    expect_error(
+        lambda: selector.select_node_address(
+            json.dumps(malformed_address_nodes), "resolver-node", "10.0.0.0/8"
+        ),
+        "a node without one valid IPv4 address was accepted",
+    )
+    expect_error(
         lambda: selector.select_node_address("not-json", "resolver-node", "10.0.0.0/8"),
         "malformed node JSON was accepted",
     )

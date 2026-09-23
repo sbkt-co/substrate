@@ -330,7 +330,6 @@ coredns_after_zone_reload="$(incus_in exec "$CONTAINER" -- systemctl show coredn
     echo "records-only zone update restarted CoreDNS instead of reloading it" >&2
     exit 1
 }
-converge
 
 assert_lkg_unchanged() {
     local label="$1"
@@ -373,25 +372,13 @@ assert_lkg_unchanged command-failure \
     --extra-vars '{"headscale_nodes_list_argv":["/bin/false"]}'
 
 step "reject malformed resolver discovery without replacing LKG"
-malformed_fixture_count=0
-while IFS='|' read -r fixture payload <&3; do
-    [ -n "$fixture" ] || continue
-    malformed_fixture_count=$((malformed_fixture_count + 1))
-    printf '%s' "$payload" | \
-        incus_in exec "$CONTAINER" -- sh -c 'cat > /tmp/substrate-resolver-nodes.json && chmod 0644 /tmp/substrate-resolver-nodes.json'
-    assert_lkg_unchanged "$fixture" \
-        --extra-vars '{"headscale_nodes_list_argv":["/bin/cat","/tmp/substrate-resolver-nodes.json"]}'
-done 3<<'EOF'
-malformed-json|not-json
-zero-match|[{"given_name":"other","ip_addresses":["100.64.0.9"]}]
-duplicate-match|[{"given_name":"substrate-test","ip_addresses":["100.64.0.9"]},{"given_name":"substrate-test","ip_addresses":["100.64.0.10"]}]
-malformed-address|[{"given_name":"substrate-test","ip_addresses":["not-an-address"]}]
-non-cgnat-address|[{"given_name":"substrate-test","ip_addresses":["192.0.2.53"]}]
-EOF
-[ "$malformed_fixture_count" -eq 5 ] || {
-    echo "expected five malformed resolver fixtures, ran $malformed_fixture_count" >&2
-    exit 1
-}
+# One full-play rejection proves the Headscale role preserves LKG state. The
+# selector's focused test covers the remaining malformed/cardinality/address
+# variants without paying for another full system converge per input.
+printf '%s' 'not-json' | \
+    incus_in exec "$CONTAINER" -- sh -c 'cat > /tmp/substrate-resolver-nodes.json && chmod 0644 /tmp/substrate-resolver-nodes.json'
+assert_lkg_unchanged malformed-json \
+    --extra-vars '{"headscale_nodes_list_argv":["/bin/cat","/tmp/substrate-resolver-nodes.json"]}'
 
 step "withdraw split DNS when the resolver role is removed"
 headscale_before_withdrawal="$(incus_in exec "$CONTAINER" -- systemctl show headscale -p InvocationID --value | tr -d '[:space:]')"
