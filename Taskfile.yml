@@ -578,15 +578,15 @@ tasks:
       - staging/up.sh
 
   staging:status:
-    desc: "Staging fleet health: incus list + tailscale status + MagicDNS check"
+    desc: "Staging fleet health: tailnet, CoreDNS, MagicDNS, and split DNS"
     summary: |
-      One glance at the local staging fleet: the Incus instances and their state,
-      the tailnet membership as seen from staging-core, and whether MagicDNS
-      resolves a node name over the tailnet. Missing pieces are tolerated (a node
-      may not have joined yet) rather than failing the task.
+      One glance at the local staging fleet: Incus state, tailnet membership,
+      CoreDNS health, the cached split-route target, and lookups through both
+      Headscale MagicDNS and the CoreDNS service authority. Missing pieces are
+      tolerated while a node is still converging.
 
-      Runs: incus list; incus exec staging-core -- tailscale status;
-            incus exec staging-web1 -- getent hosts staging-core.net.sbkt.co
+      Runs: incus list; tailscale status; systemctl is-active coredns;
+            resolver-address/config inspection; net.sbkt.co and svc.sbkt.co lookups
     cmds:
       - |
         if [ "${SUBSTRATE_TOOLBOX:-0}" = "1" ]; then
@@ -598,8 +598,20 @@ tasks:
         incus list --project "{{.STAGING_PROJECT}}" || true
         echo; echo "== tailscale status (from staging-core) =="
         incus exec staging-core --project "{{.STAGING_PROJECT}}" -- tailscale status || echo "(tailnet not up on staging-core yet)"
+        echo; echo "== CoreDNS service (staging-core) =="
+        incus exec staging-core --project "{{.STAGING_PROJECT}}" -- systemctl is-active coredns || echo "(CoreDNS not active yet)"
+        echo; echo "== Headscale split route (staging-core) =="
+        if ! incus exec staging-core --project "{{.STAGING_PROJECT}}" -- sh -c '
+          printf "resolver-address: "
+          cat /var/lib/substrate/resolver-address
+          sed -n "/^[[:space:]]*split:/,/^[[:space:]]*search_domains:/p" /etc/headscale/config.yaml
+        '; then
+          echo "(resolver-address or split route not rendered yet)"
+        fi
         echo; echo "== MagicDNS: staging-core.net.sbkt.co (from staging-web1) =="
         incus exec staging-web1 --project "{{.STAGING_PROJECT}}" -- getent hosts staging-core.net.sbkt.co || echo "(MagicDNS not resolving yet)"
+        echo; echo "== Split DNS: control.svc.sbkt.co (from staging-web1) =="
+        incus exec staging-web1 --project "{{.STAGING_PROJECT}}" -- getent hosts control.svc.sbkt.co || echo "(service split DNS not resolving yet)"
 
   staging:logs:
     desc: "Tail a staging node's substrate-reconcile journal (NODE=<name>)"
@@ -785,9 +797,9 @@ tasks:
   learn:topology:
     desc: "Lesson: the layers — physical / tailnet / naming / TLS / control"
     summary: |
-      A 22-line miniature of substrate's layered topology: cloud/Incus hosts, the
-      headscale tailnet, MagicDNS naming, the wildcard TLS cert, and GitHub as the
-      control layer you operate. Each layer only trusts the one below it.
+      A miniature of substrate's layered topology: cloud/Incus hosts, the headscale
+      tailnet, three DNS authorities, the public wildcard TLS cert, and GitHub as
+      the control layer you operate. Each layer only trusts the one below it.
 
       Runs: renders the lesson to the terminal (gum-styled header if available).
     cmds:
@@ -809,11 +821,11 @@ tasks:
                     preauth key at bootstrap. All internal traffic rides the
                     tailnet; nothing internal is exposed on the public internet.
 
-          NAMING    MagicDNS under net.sbkt.co gives every node a stable internal
-                    name. These names never appear in public DNS or in
-                    Certificate Transparency logs.
+          NAMING    Cloudflare owns public sbkt.co, MagicDNS owns node names under
+                    net.sbkt.co, and CoreDNS owns services under svc.sbkt.co.
+                    Neither private namespace appears in public DNS.
 
-          TLS       A wildcard *.net.sbkt.co cert, issued via DNS-01 by the
+          TLS       A public sbkt.co + *.sbkt.co cert, issued via DNS-01 by the
                     cert_issuer node and pulled by cert_client nodes over the
                     tailnet. No cert material in git.
 
@@ -886,10 +898,10 @@ tasks:
         check-mode lint can never be.
 
           THE TWO CONTAINERS (Incus, project substrate-staging):
-            staging-core   headscale (tailnet coordinator) + cert_issuer. Mints
-                           the preauth keys and issues the wildcard cert.
-            staging-web1   a cert_client: joins the tailnet, pulls the cert over
-                           it, resolves staging-core by MagicDNS.
+            staging-core   headscale + CoreDNS + cert_issuer. Mints preauth
+                           keys, serves svc.sbkt.co, and issues the public wildcard.
+            staging-web1   joins the tailnet, resolves MagicDNS and split-DNS
+                           names, and pulls the cert as a cert_client.
 
           WHY IT IS THE INTEGRATION TEST: these nodes bootstrap, join the tailnet,
           issue and fetch TLS, and reconcile on a 5-minute timer exactly like

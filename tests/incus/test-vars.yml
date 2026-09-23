@@ -27,11 +27,10 @@
 #                  still installs its unit/wrapper (no live DNS-01 in CI).
 #   cert_client  — runs with no issuer host pinned, SKIPS the fetch loudly.
 #   resolver     — installs CoreDNS for real (version-pinned binary, systemd
-#                  unit binding loopback + this node's tailnet IPv4). Because it
-#                  is co-located with headscale here and the node is enrolled, it
-#                  GENERATES /etc/coredns/internal.zone from `headscale nodes
-#                  list` for real. Fleet DNS wiring stays OFF (the gated var
-#                  defaults false), so headscale's config is unchanged.
+#                  unit binding loopback + this node's tailnet IPv4) and renders
+#                  the git-managed svc.sbkt.co service zone after enrollment.
+#                  The following convergence discovers that address and adds the
+#                  Headscale split-DNS route.
 # ----------------------------------------------------------------------
 # Keep the node's own reconciler from firing DURING the test. The role
 # installs a live timer (correctly -- verify.yml asserts it is active, and the
@@ -48,10 +47,15 @@ substrate_reconcile_interval: "60min"
 node_roles:
   - headscale
   - tailnet
+  - resolver
   - dns
   - cert_issuer
   - cert_client
-  - resolver
+
+resolver_service_records:
+  - name: control
+    type: CNAME
+    value: "substrate-test.{{ substrate_tailnet_domain }}."
 
 # Single-node tailnet: the coordinator headscale binds loopback (the role
 # default), and this same node joins it as a client over loopback. run.sh mints

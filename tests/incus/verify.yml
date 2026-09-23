@@ -351,60 +351,70 @@
         fail_msg: "a Cloudflare DNS token file exists in CI — it must never be present here"
 
     # ------------------------------------------------------------------
-    # resolver: CoreDNS binary + Corefile + unit installed; the internal zone
-    # was GENERATED for real (headscale is co-located and the node is enrolled),
-    # and the service is active (the wrapper resolved the tailnet IP and bound
-    # loopback + tailnet). Fleet DNS wiring stays OFF: headscale's config must
-    # NOT point nodes at CoreDNS (the gated var defaults false).
+    # resolver: CoreDNS serves the git-managed svc.sbkt.co authority while
+    # Headscale retains net.sbkt.co MagicDNS and routes only the service suffix
+    # to the validated, cached tailnet address.
     # ------------------------------------------------------------------
-    - name: Stat resolver artifacts
+    - name: Stat resolver artifacts and last-known-good address
       ansible.builtin.stat:
         path: "{{ item }}"
       register: verify_resolver_paths
       loop:
-        - /usr/local/bin/coredns                       # 0: binary installed
-        - /etc/coredns/Corefile                        # 1: config rendered
-        - /usr/local/bin/coredns-serve.sh              # 2: serve wrapper
-        - /etc/systemd/system/coredns.service          # 3: unit installed
-        - /etc/coredns/internal.zone                   # 4: zone GENERATED (headscale co-located + enrolled)
+        - /usr/local/bin/coredns
+        - /etc/coredns/Corefile
+        - /usr/local/bin/coredns-serve.sh
+        - /etc/systemd/system/coredns.service
+        - /etc/coredns/internal.zone
+        - /var/lib/substrate/resolver-address
 
-    - name: Assert resolver installed its binary, config, wrapper, unit, and generated the zone
+    - name: Assert resolver artifacts and last-known-good address exist
       ansible.builtin.assert:
         that:
           - verify_resolver_paths.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+          - verify_resolver_paths.results[5].stat.mode == '0644'
         fail_msg: >-
-          resolver artifacts missing:
+          resolver artifacts missing or resolver-address mode is not 0644:
           {{ verify_resolver_paths.results | selectattr('stat.exists', 'equalto', false) | map(attribute='item') | list }}
 
-    - name: Read the rendered Corefile
+    - name: Read the rendered Corefile, service zone, cache, and Headscale config
       ansible.builtin.slurp:
-        src: /etc/coredns/Corefile
-      register: verify_corefile
+        src: "{{ item }}"
+      register: verify_dns_files
+      loop:
+        - /etc/coredns/Corefile
+        - /etc/coredns/internal.zone
+        - /var/lib/substrate/resolver-address
+        - /etc/headscale/config.yaml
 
-    - name: Assert the Corefile forwards over DoT with the expected upstreams and SNI
+    - name: Record rendered DNS state
+      ansible.builtin.set_fact:
+        verify_corefile_text: "{{ verify_dns_files.results[0].content | b64decode }}"
+        verify_zone_text: "{{ verify_dns_files.results[1].content | b64decode }}"
+        verify_cached_resolver: "{{ verify_dns_files.results[2].content | b64decode | trim }}"
+        verify_headscale_config: "{{ verify_dns_files.results[3].content | b64decode | from_yaml }}"
+
+    - name: Assert the Corefile is authoritative for services without public fallthrough
       ansible.builtin.assert:
         that:
-          - "'forward . tls://1.1.1.1 tls://1.0.0.1' in (verify_corefile.content | b64decode)"
-          - "'tls_servername cloudflare-dns.com' in (verify_corefile.content | b64decode)"
-          - "'hosts /etc/coredns/internal.zone' in (verify_corefile.content | b64decode)"
-          - "'fallthrough' in (verify_corefile.content | b64decode)"
-        fail_msg: "Corefile is missing the expected internal-zone / DoT-forward configuration"
+          - "'svc.sbkt.co:53' in verify_corefile_text"
+          - "'file /etc/coredns/internal.zone svc.sbkt.co' in verify_corefile_text"
+          - "'net.sbkt.co:53' in verify_corefile_text"
+          - "'forward . 100.100.100.100' in verify_corefile_text"
+          - "'fallthrough' not in verify_corefile_text"
+          - "'forward . tls://1.1.1.1 tls://1.0.0.1' in verify_corefile_text"
+          - "'tls_servername cloudflare-dns.com' in verify_corefile_text"
+        fail_msg: "Corefile does not enforce the private authoritative service-zone contract"
 
-    - name: Read the generated internal zone
-      ansible.builtin.slurp:
-        src: /etc/coredns/internal.zone
-      register: verify_zone
-
-    - name: Assert the internal zone maps this node's name into substrate_domain
-      # The single-node harness enrolled itself, so the generated hosts-format
-      # zone must contain at least one <tailnet-ipv4> <name>.sbkt.co line.
+    - name: Assert the git-managed service zone has standard authority records
       ansible.builtin.assert:
         that:
-          - (verify_zone.content | b64decode | trim) | length > 0
-          - "'.sbkt.co' in (verify_zone.content | b64decode)"
+          - "'$ORIGIN svc.sbkt.co.' in verify_zone_text"
+          - "'@ IN SOA ns hostmaster ' in verify_zone_text"
+          - "'@ IN NS ns' in verify_zone_text"
+          - "'control 300 IN CNAME substrate-test.net.sbkt.co.' in verify_zone_text"
         fail_msg: >-
-          internal.zone was not generated with any node record:
-          {{ verify_zone.content | b64decode }}
+          internal.zone does not contain the expected svc.sbkt.co authority and
+          git-managed control service record: {{ verify_zone_text }}
 
     - name: Query CoreDNS service state
       ansible.builtin.systemd:
@@ -412,7 +422,7 @@
       register: verify_coredns_svc
       changed_when: false
 
-    - name: Dump CoreDNS journal when it is not active (diagnostic)
+    - name: Dump CoreDNS journal when it is not active
       ansible.builtin.command: journalctl -u coredns --no-pager -n 40
       register: verify_coredns_journal
       changed_when: false
@@ -424,23 +434,33 @@
         var: verify_coredns_journal.stdout_lines
       when: verify_coredns_svc.status.ActiveState != "active"
 
-    - name: Assert CoreDNS is active (wrapper resolved the tailnet IP and bound)
+    - name: Assert CoreDNS is active
       ansible.builtin.assert:
         that:
           - verify_coredns_svc.status.ActiveState == "active"
         fail_msg: >-
           coredns ActiveState is {{ verify_coredns_svc.status.ActiveState }}, expected active
-          (the serve wrapper should have resolved this node's tailnet IPv4 and started)
 
-    - name: Read the headscale config to confirm fleet DNS wiring stayed OFF
-      ansible.builtin.slurp:
-        src: /etc/headscale/config.yaml
-      register: verify_headscale_dns
+    - name: Resolve the service alias through split DNS and MagicDNS
+      ansible.builtin.command: getent ahostsv4 control.svc.sbkt.co
+      register: verify_service_lookup
+      changed_when: false
 
-    - name: Assert headscale was NOT wired to CoreDNS (gated var defaults off)
+    - name: Read this node's tailnet IPv4
+      ansible.builtin.command: tailscale ip -4
+      register: verify_tailnet_ipv4
+      changed_when: false
+
+    - name: Assert Headscale split DNS routes only the service domain
       ansible.builtin.assert:
         that:
-          - "'override_local_dns: true' not in (verify_headscale_dns.content | b64decode)"
+          - verify_cached_resolver == (verify_tailnet_ipv4.stdout | trim)
+          - verify_headscale_config.dns.magic_dns | bool
+          - verify_headscale_config.dns.base_domain == 'net.sbkt.co'
+          - verify_headscale_config.dns.nameservers.global == ['1.1.1.1', '8.8.8.8']
+          - verify_headscale_config.dns.nameservers.split['svc.sbkt.co'] == [verify_cached_resolver]
+          - verify_cached_resolver in verify_service_lookup.stdout
+          - "'override_local_dns' not in verify_headscale_config.dns"
         fail_msg: >-
-          headscale config emitted override_local_dns, but substrate_resolver_wire_dns
-          defaults false — the resolver wiring must be inert until explicitly enabled
+          Headscale DNS state does not preserve net.sbkt.co MagicDNS with exactly
+          one svc.sbkt.co split route to the cached resolver {{ verify_cached_resolver }}.
